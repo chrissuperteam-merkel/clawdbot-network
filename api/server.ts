@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
-import { executeTask, getTaskStatus, getScreenshot } from './device-executor';
+import { createProxySession, getSessionStatus, completeProxySession } from './proxy-session';
 
 // Try to import Solana contract helpers (optional)
 let registerDeviceOnChain: ((wallet: string, deviceId: string) => Promise<any>) | null = null;
@@ -15,64 +15,86 @@ try {
 }
 
 // Types
-interface Device {
+interface ProxyNode {
   deviceId: string;
   name: string;
-  capabilities: string[];
+  carrier: string;
+  country: string;
+  networkType: string; // '5g' | 'lte' | '3g'
   wallet: string;
-  status: 'available' | 'busy';
+  status: 'available' | 'busy' | 'offline';
+  bandwidthMbps: number;
+  uptimeScore: number;
   registeredAt: string;
 }
 
-interface Task {
-  taskId: string;
-  description: string;
-  reward_lamports: number;
-  creator_wallet: string;
-  status: 'pending' | 'assigned' | 'running' | 'completed' | 'failed';
-  assignedDevice?: string;
-  deviceTaskId?: string;
-  resultHash?: string;
-  screenshotUrl?: string;
+interface ProxySession {
+  sessionId: string;
+  agentWallet: string;
+  protocol: 'socks5' | 'http';
+  country?: string;
+  carrier?: string;
+  durationMinutes: number;
+  escrowLamports: number;
+  status: 'pending' | 'active' | 'completed' | 'failed';
+  assignedNode?: string;
+  proxyUrl?: string;
+  bytesTransferred: number;
   createdAt: string;
   completedAt?: string;
 }
 
 // In-memory state
-const devices = new Map<string, Device>();
-const tasks = new Map<string, Task>();
+const nodes = new Map<string, ProxyNode>();
+const sessions = new Map<string, ProxySession>();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health
+// ── Health ──────────────────────────────────────────────────────────
+
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', devices: devices.size, tasks: tasks.size, timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    nodes: nodes.size,
+    activeSessions: Array.from(sessions.values()).filter(s => s.status === 'active').length,
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// List devices
-app.get('/api/devices', (_req, res) => {
-  res.json(Array.from(devices.values()));
+// ── Proxy Nodes (Phone Registration) ───────────────────────────────
+
+// List available proxy nodes
+app.get('/proxy/nodes', (req, res) => {
+  const { country, carrier } = req.query;
+  let result = Array.from(nodes.values());
+  if (country) result = result.filter(n => n.country === country);
+  if (carrier) result = result.filter(n => n.carrier === carrier);
+  res.json(result);
 });
 
-// Register device
-app.post('/api/devices/register', async (req, res) => {
+// Register a phone as a proxy node
+app.post('/device/register', async (req, res) => {
   try {
-    const { deviceId, name, capabilities, wallet } = req.body;
-    if (!deviceId || !name || !wallet) {
-      return res.status(400).json({ error: 'deviceId, name, and wallet are required' });
+    const { deviceId, name, carrier, country, networkType, wallet, bandwidthMbps } = req.body;
+    if (!deviceId || !wallet || !carrier || !country) {
+      return res.status(400).json({ error: 'deviceId, wallet, carrier, and country are required' });
     }
 
-    const device: Device = {
+    const node: ProxyNode = {
       deviceId,
-      name,
-      capabilities: capabilities || [],
+      name: name || `proxy-${deviceId.slice(0, 8)}`,
+      carrier,
+      country,
+      networkType: networkType || 'lte',
       wallet,
       status: 'available',
+      bandwidthMbps: bandwidthMbps || 10,
+      uptimeScore: 1.0,
       registeredAt: new Date().toISOString(),
     };
-    devices.set(deviceId, device);
+    nodes.set(deviceId, node);
 
     // Register on-chain (fire and forget)
     if (registerDeviceOnChain) {
@@ -81,102 +103,117 @@ app.post('/api/devices/register', async (req, res) => {
       );
     }
 
-    res.json({ success: true, device });
+    res.json({ success: true, node });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// List tasks
-app.get('/api/tasks', (_req, res) => {
-  res.json(Array.from(tasks.values()));
+// List all registered devices
+app.get('/device/list', (_req, res) => {
+  res.json(Array.from(nodes.values()));
 });
 
-// Create task
-app.post('/api/tasks/create', (req, res) => {
+// ── Proxy Sessions (Agent-facing) ──────────────────────────────────
+
+// Agent requests a proxy session
+app.post('/proxy/request', async (req, res) => {
   try {
-    const { description, reward_lamports, creator_wallet } = req.body;
-    if (!description || !creator_wallet) {
-      return res.status(400).json({ error: 'description and creator_wallet are required' });
+    const { agentWallet, protocol, country, carrier, durationMinutes, escrowLamports } = req.body;
+    if (!agentWallet) {
+      return res.status(400).json({ error: 'agentWallet is required' });
     }
 
-    const task: Task = {
-      taskId: uuidv4(),
-      description,
-      reward_lamports: reward_lamports || 0,
-      creator_wallet,
-      status: 'pending',
+    // Find matching available node
+    let candidates = Array.from(nodes.values()).filter(n => n.status === 'available');
+    if (country) candidates = candidates.filter(n => n.country === country);
+    if (carrier) candidates = candidates.filter(n => n.carrier === carrier);
+
+    // Sort by uptime score (best first)
+    candidates.sort((a, b) => b.uptimeScore - a.uptimeScore);
+
+    if (candidates.length === 0) {
+      return res.status(400).json({ error: 'No available proxy nodes matching criteria' });
+    }
+
+    const selectedNode = candidates[0];
+    selectedNode.status = 'busy';
+
+    const session: ProxySession = {
+      sessionId: uuidv4(),
+      agentWallet,
+      protocol: protocol || 'socks5',
+      country: selectedNode.country,
+      carrier: selectedNode.carrier,
+      durationMinutes: durationMinutes || 10,
+      escrowLamports: escrowLamports || 0,
+      status: 'active',
+      assignedNode: selectedNode.deviceId,
+      proxyUrl: `${protocol || 'socks5'}://${selectedNode.deviceId}:${session?.sessionId}@router.clawdbot.network:1080`,
+      bytesTransferred: 0,
       createdAt: new Date().toISOString(),
     };
-    tasks.set(task.taskId, task);
-    res.json({ success: true, task });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// Assign task
-app.post('/api/tasks/:taskId/assign', async (req, res) => {
-  try {
-    const task = tasks.get(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    if (task.status !== 'pending') return res.status(400).json({ error: `Task is ${task.status}, not pending` });
+    // Fix proxy URL (session wasn't available yet)
+    session.proxyUrl = `${session.protocol}://${selectedNode.deviceId}:${session.sessionId}@router.clawdbot.network:1080`;
 
-    // Find available device
-    const availableDevice = Array.from(devices.values()).find(d => d.status === 'available');
-    if (!availableDevice) return res.status(400).json({ error: 'No available devices' });
+    sessions.set(session.sessionId, session);
 
-    // Assign
-    task.status = 'assigned';
-    task.assignedDevice = availableDevice.deviceId;
-    availableDevice.status = 'busy';
-
-    // Trigger device execution
-    task.status = 'running';
+    // Initialize proxy tunnel
     try {
-      const deviceResult = await executeTask(availableDevice.deviceId, task.description);
-      task.deviceTaskId = deviceResult.task_id || deviceResult.id;
-      console.log(`[DeviceAPI] Task started: ${task.deviceTaskId}`);
+      await createProxySession(selectedNode.deviceId, session.sessionId, session.protocol);
     } catch (err: any) {
-      console.error('[DeviceAPI] Execute failed:', err.message);
-      // Don't fail the assignment — device is still assigned
+      console.error('[Proxy] Tunnel setup failed:', err.message);
     }
 
-    res.json({ success: true, task, device: availableDevice });
+    res.json({ success: true, session });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Complete task
-app.post('/api/tasks/:taskId/complete', async (req, res) => {
+// Get session status
+app.get('/proxy/session/:sessionId', (req, res) => {
+  const session = sessions.get(req.params.sessionId);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  res.json(session);
+});
+
+// Complete a proxy session — release payment
+app.post('/proxy/session/:sessionId/complete', async (req, res) => {
   try {
-    const task = tasks.get(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const session = sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    const { resultHash, screenshotUrl } = req.body;
-    task.status = 'completed';
-    task.resultHash = resultHash;
-    task.screenshotUrl = screenshotUrl;
-    task.completedAt = new Date().toISOString();
+    const { bytesTransferred } = req.body;
+    session.status = 'completed';
+    session.bytesTransferred = bytesTransferred || 0;
+    session.completedAt = new Date().toISOString();
 
-    // Free device
-    if (task.assignedDevice) {
-      const device = devices.get(task.assignedDevice);
-      if (device) device.status = 'available';
+    // Free the proxy node
+    if (session.assignedNode) {
+      const node = nodes.get(session.assignedNode);
+      if (node) node.status = 'available';
     }
 
-    // Release payment on-chain
-    if (releasePaymentOnChain && task.assignedDevice) {
-      const device = devices.get(task.assignedDevice);
-      if (device) {
-        releasePaymentOnChain(task.taskId, task.reward_lamports, device.wallet).catch(err =>
+    // Release escrow payment on-chain
+    if (releasePaymentOnChain && session.assignedNode) {
+      const node = nodes.get(session.assignedNode);
+      if (node) {
+        releasePaymentOnChain(session.sessionId, session.escrowLamports, node.wallet).catch(err =>
           console.error('[Solana] Payment release failed:', err.message)
         );
       }
     }
 
-    res.json({ success: true, task });
+    // Clean up tunnel
+    try {
+      await completeProxySession(session.sessionId);
+    } catch (err: any) {
+      console.error('[Proxy] Tunnel cleanup failed:', err.message);
+    }
+
+    res.json({ success: true, session });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -184,5 +221,5 @@ app.post('/api/tasks/:taskId/complete', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🤖 Clawdbot Router API running on port ${PORT}`);
+  console.log(`🌐 Clawdbot Proxy Router running on port ${PORT}`);
 });

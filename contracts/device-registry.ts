@@ -1,9 +1,12 @@
 /**
- * Clawdbot Network - Device Registry
+ * Clawdbot Network - Device Registry (Proxy Node Registry)
  * 
- * Client-side device registry using Solana accounts.
- * Stores device metadata on-chain via account data and memo program.
- * PDAs are derived conceptually for deterministic addressing.
+ * Registers phones as mobile proxy nodes on Solana.
+ * Stores device metadata (carrier, country, network type, bandwidth) on-chain
+ * via the Memo program. PDAs provide deterministic addressing per device.
+ * 
+ * Each registered phone becomes a proxy node that AI agents can route
+ * traffic through, earning SOL for the phone owner.
  */
 
 import {

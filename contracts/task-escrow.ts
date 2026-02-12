@@ -1,9 +1,12 @@
 /**
- * Clawdbot Network - Task Escrow
+ * Clawdbot Network - Session Escrow
  * 
- * Client-side escrow pattern for task payments on Solana.
- * Uses SystemProgram transfers + Memo program for on-chain proofs.
- * Escrow is held in a derived keypair account controlled by the system.
+ * Escrow pattern for proxy session payments on Solana.
+ * AI agents deposit SOL before a proxy session starts. Payment is held
+ * in a derived escrow account and released to the phone owner upon
+ * session completion, with bandwidth proof stored on-chain via Memo.
+ * 
+ * Flow: Agent deposits → Session runs → Bandwidth metered → Payment released (70/30 split)
  */
 
 import {
