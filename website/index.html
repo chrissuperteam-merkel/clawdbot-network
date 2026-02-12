@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clawdbot Network — Decentralized Mobile Proxy for AI Agents</title>
+  <meta name="description" content="Turn your phone into a proxy node. Earn SOL. The decentralized mobile proxy network powered by Solana.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #050507;
+      --bg-card: #0c0c12;
+      --bg-card-hover: #111118;
+      --border: #1a1a24;
+      --border-glow: #6c5ce7;
+      --text: #e8e8ef;
+      --text-dim: #6b6b80;
+      --text-mid: #9b9bb0;
+      --accent: #6c5ce7;
+      --accent-glow: rgba(108, 92, 231, 0.3);
+      --green: #00d68f;
+      --green-glow: rgba(0, 214, 143, 0.2);
+      --orange: #f5a623;
+      --gradient: linear-gradient(135deg, #6c5ce7, #00d68f);
+      --gradient-text: linear-gradient(135deg, #a78bfa, #34d399);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, sans-serif;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Ambient glow */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(ellipse at 30% 20%, rgba(108, 92, 231, 0.05) 0%, transparent 60%),
+                  radial-gradient(ellipse at 70% 80%, rgba(0, 214, 143, 0.03) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+    /* Nav */
+    nav {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      z-index: 100;
+      padding: 16px 0;
+      background: rgba(5, 5, 7, 0.8);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+    nav .container { display: flex; justify-content: space-between; align-items: center; }
+    .logo { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+    .logo span { background: var(--gradient-text); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .nav-links { display: flex; gap: 32px; align-items: center; }
+    .nav-links a { color: var(--text-mid); text-decoration: none; font-size: 14px; font-weight: 500; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-btn {
+      background: var(--gradient);
+      color: white;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      text-decoration: none;
+      transition: opacity 0.2s;
+    }
+    .nav-btn:hover { opacity: 0.9; }
+
+    /* Hero */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(108, 92, 231, 0.1);
+      border: 1px solid rgba(108, 92, 231, 0.3);
+      border-radius: 100px;
+      padding: 6px 16px;
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 500;
+      margin-bottom: 32px;
+    }
+    .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    h1 {
+      font-size: clamp(40px, 6vw, 72px);
+      font-weight: 900;
+      letter-spacing: -2px;
+      line-height: 1.05;
+      margin-bottom: 24px;
+    }
+    h1 .gradient { background: var(--gradient-text); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    .hero-sub {
+      font-size: 18px;
+      color: var(--text-mid);
+      max-width: 600px;
+      margin: 0 auto 48px;
+      line-height: 1.7;
+    }
+
+    /* Role Selector */
+    .role-select {
+      display: flex;
+      gap: 24px;
+      justify-content: center;
+      margin-bottom: 80px;
+    }
+    .role-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px 32px;
+      width: 340px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.3s;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .role-card:hover {
+      border-color: var(--accent);
+      background: var(--bg-card-hover);
+      transform: translateY(-4px);
+      box-shadow: 0 20px 60px rgba(108, 92, 231, 0.1);
+    }
+    .role-icon { font-size: 40px; margin-bottom: 16px; }
+    .role-card h3 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .role-card p { color: var(--text-dim); font-size: 14px; line-height: 1.6; }
+    .role-tag {
+      display: inline-block;
+      margin-top: 16px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 4px 12px;
+      border-radius: 6px;
+    }
+    .tag-green { background: var(--green-glow); color: var(--green); }
+    .tag-purple { background: var(--accent-glow); color: var(--accent); }
+
+    /* Stats */
+    .stats {
+      display: flex;
+      justify-content: center;
+      gap: 64px;
+      padding: 40px 0;
+      margin-bottom: 80px;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .stat { text-align: center; }
+    .stat-value { font-size: 36px; font-weight: 800; background: var(--gradient-text); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat-label { font-size: 13px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+    /* How it works */
+    .section { padding: 80px 0; }
+    .section-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+    h2 {
+      font-size: 40px;
+      font-weight: 800;
+      letter-spacing: -1px;
+      margin-bottom: 16px;
+    }
+    .section-desc { color: var(--text-mid); font-size: 16px; max-width: 560px; margin-bottom: 48px; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+    .flow-step {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 24px;
+      position: relative;
+    }
+    .flow-num {
+      font-size: 48px;
+      font-weight: 900;
+      background: var(--gradient-text);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      opacity: 0.3;
+      line-height: 1;
+      margin-bottom: 12px;
+    }
+    .flow-step h4 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .flow-step p { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+
+    /* Code block */
+    .code-section {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .code-block {
+      background: #0a0a10;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .code-header {
+      display: flex;
+      gap: 6px;
+      padding: 12px 16px;
+      background: rgba(255,255,255,0.03);
+      border-bottom: 1px solid var(--border);
+    }
+    .code-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .code-dot:nth-child(1) { background: #ff5f57; }
+    .code-dot:nth-child(2) { background: #febc2e; }
+    .code-dot:nth-child(3) { background: #28c840; }
+    pre {
+      padding: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      overflow-x: auto;
+      color: var(--text-mid);
+    }
+    pre .comment { color: #4a4a5a; }
+    pre .string { color: #34d399; }
+    pre .keyword { color: #a78bfa; }
+    pre .func { color: #60a5fa; }
+
+    /* Features */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    .feature {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 28px;
+      transition: border-color 0.3s;
+    }
+    .feature:hover { border-color: var(--accent); }
+    .feature-icon { font-size: 28px; margin-bottom: 16px; }
+    .feature h4 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .feature p { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+
+    /* CTA */
+    .cta {
+      text-align: center;
+      padding: 100px 0;
+    }
+    .cta h2 { font-size: 48px; margin-bottom: 16px; }
+    .cta p { color: var(--text-mid); font-size: 16px; margin-bottom: 40px; }
+    .cta-buttons { display: flex; gap: 16px; justify-content: center; }
+    .btn-primary {
+      background: var(--gradient);
+      color: white;
+      padding: 14px 32px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 16px;
+      text-decoration: none;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      padding: 14px 32px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 16px;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover { border-color: var(--text-mid); }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+    footer a { color: var(--text-mid); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    /* Live indicator */
+    #live-stats .stat-value { transition: all 0.3s; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .role-select { flex-direction: column; align-items: center; }
+      .role-card { width: 100%; max-width: 400px; }
+      .flow { grid-template-columns: 1fr 1fr; }
+      .code-section { grid-template-columns: 1fr; }
+      .features { grid-template-columns: 1fr; }
+      .stats { flex-wrap: wrap; gap: 32px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="container">
+      <div class="logo">⚡ <span>Clawdbot Network</span></div>
+      <div class="nav-links">
+        <a href="#how">How it Works</a>
+        <a href="#agents">For Agents</a>
+        <a href="#nodes">For Nodes</a>
+        <a href="#docs">Docs</a>
+        <a href="/clawdbot/dashboard" class="nav-btn">Dashboard ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge"><span class="dot"></span> Live on Solana Devnet</div>
+      <h1>The <span class="gradient">Decentralized Proxy</span><br>Network for AI Agents</h1>
+      <p class="hero-sub">AI agents need real IPs. Data center IPs get blocked everywhere. Clawdbot turns idle phones into proxy nodes — powered by Solana micropayments.</p>
+
+      <div class="role-select">
+        <a href="#agents" class="role-card">
+          <div class="role-icon">🤖</div>
+          <h3>I'm building an Agent</h3>
+          <p>Route your agent's traffic through real residential IPs. Pay per session with SOL. No subscriptions, no KYC.</p>
+          <span class="role-tag tag-purple">DEVELOPER</span>
+        </a>
+        <a href="#nodes" class="role-card">
+          <div class="role-icon">📱</div>
+          <h3>I have a spare Phone</h3>
+          <p>Turn your old phone into a proxy node. Share your WiFi bandwidth. Earn SOL for every session routed through your device.</p>
+          <span class="role-tag tag-green">EARN SOL</span>
+        </a>
+      </div>
+
+      <!-- Live Stats -->
+      <div class="stats" id="live-stats">
+        <div class="stat">
+          <div class="stat-value" id="stat-nodes">-</div>
+          <div class="stat-label">Nodes Online</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-sessions">-</div>
+          <div class="stat-label">Active Sessions</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-cost">0.005</div>
+          <div class="stat-label">SOL per Session</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-split">70%</div>
+          <div class="stat-label">To Node Owners</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section" id="how">
+    <div class="container">
+      <div class="section-label">How it works</div>
+      <h2>Four steps. Real traffic. Real payments.</h2>
+      <p class="section-desc">No middlemen. No subscriptions. Agents pay nodes directly through Solana smart contracts.</p>
+
+      <div class="flow">
+        <div class="flow-step">
+          <div class="flow-num">01</div>
+          <h4>Phone Connects</h4>
+          <p>Install the Clawdbot app. Your phone connects to the network as a proxy node via WebSocket.</p>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">02</div>
+          <h4>Agent Pays Escrow</h4>
+          <p>Agent sends 0.005 SOL to the escrow contract. Payment is verified on-chain before the session starts.</p>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">03</div>
+          <h4>Traffic Routes</h4>
+          <p>HTTP and HTTPS traffic flows through the phone's real IP. Full tunnel — TLS, HTTP/2, the works.</p>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">04</div>
+          <h4>Node Gets Paid</h4>
+          <p>Session ends. 70% goes to the phone owner, 30% platform fee. Instant. On-chain. Transparent.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- For Agents -->
+  <section class="section" id="agents" style="background: rgba(108, 92, 231, 0.02);">
+    <div class="container">
+      <div class="section-label">For Developers & Agents</div>
+      <h2>Three lines. Real residential IP.</h2>
+      <p class="section-desc">No SDK to install. No authentication dance. Just HTTP.</p>
+
+      <div class="code-section">
+        <div>
+          <div class="code-block">
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <pre><span class="comment">// Quick test — one line</span>
+<span class="keyword">curl</span> <span class="string">"/proxy/fetch?url=https://httpbin.org/ip"</span>
+<span class="comment">// → { "origin": "87.191.59.123" }  ← phone's real IP</span>
+
+<span class="comment">// Full flow with Solana payment</span>
+<span class="keyword">const</span> session = <span class="keyword">await</span> <span class="func">fetch</span>(<span class="string">'/proxy/session'</span>, {
+  method: <span class="string">'POST'</span>,
+  body: JSON.stringify({
+    wallet: <span class="string">'YourAgentWallet...'</span>,
+    escrowTx: <span class="string">'SolanaTransactionSig...'</span>,
+    country: <span class="string">'DE'</span>
+  })
+})
+
+<span class="comment">// Use as HTTP/HTTPS proxy</span>
+<span class="keyword">curl</span> --proxy host:1080 \
+  -H <span class="string">"X-Session-Id: ${session.id}"</span> \
+  https://any-website.com</pre>
+          </div>
+        </div>
+        <div>
+          <h3 style="font-size: 24px; font-weight: 700; margin-bottom: 16px;">Why agents need this</h3>
+          <div style="display: flex; flex-direction: column; gap: 16px;">
+            <div>
+              <h4 style="font-size: 15px; font-weight: 600;">🚫 Datacenter IPs get blocked</h4>
+              <p style="font-size: 13px; color: var(--text-dim);">CAPTCHAs, rate limits, outright bans. Every website fingerprints server IPs.</p>
+            </div>
+            <div>
+              <h4 style="font-size: 15px; font-weight: 600;">🏠 Residential IPs don't</h4>
+              <p style="font-size: 13px; color: var(--text-dim);">WiFi and mobile IPs are shared by millions of real users. Sites trust them.</p>
+            </div>
+            <div>
+              <h4 style="font-size: 15px; font-weight: 600;">⚡ Pay-per-use with SOL</h4>
+              <p style="font-size: 13px; color: var(--text-dim);">No monthly plans. No KYC. No API keys to manage. Just send SOL and go.</p>
+            </div>
+            <div>
+              <h4 style="font-size: 15px; font-weight: 600;">🌍 Real geo-targeting</h4>
+              <p style="font-size: 13px; color: var(--text-dim);">Select nodes by country. Get a German IP, a US IP — real residential endpoints.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- For Phone Owners -->
+  <section class="section" id="nodes">
+    <div class="container">
+      <div class="section-label">For Phone Owners</div>
+      <h2>Your old phone. Passive income.</h2>
+      <p class="section-desc">Got a spare Android collecting dust? Install the app, connect to WiFi, earn SOL.</p>
+
+      <div class="features">
+        <div class="feature">
+          <div class="feature-icon">📲</div>
+          <h4>Install in 30 seconds</h4>
+          <p>Download the APK. Tap Start. Your phone is now a proxy node earning SOL. No root required.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔒</div>
+          <h4>Your device, your rules</h4>
+          <p>Traffic passes through, it doesn't stay. No data storage. No tracking. You can stop anytime.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">💰</div>
+          <h4>Earn 0.0035 SOL per session</h4>
+          <p>70% of every session fee goes directly to your Solana wallet. Instant payouts, on-chain.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔋</div>
+          <h4>Low power, always on</h4>
+          <p>Runs as a background service. Minimal battery impact. Works on WiFi — no mobile data needed.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🌐</div>
+          <h4>Any Android phone</h4>
+          <p>Old Galaxy? Pixel? Solana Seeker? If it runs Android 8+ and connects to WiFi, it works.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">📊</div>
+          <h4>Live stats in-app</h4>
+          <p>See connections, bytes routed, and earnings in real-time. Your node, full transparency.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Docs / API -->
+  <section class="section" id="docs" style="background: rgba(0, 214, 143, 0.02);">
+    <div class="container">
+      <div class="section-label">API Reference</div>
+      <h2>Simple REST API. No SDK required.</h2>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 32px;">
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--green);">GET /nodes</h4>
+          <p>List all online proxy nodes with device info, country, and connection type.</p>
+        </div>
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--green);">POST /proxy/session</h4>
+          <p>Create a proxy session. Optionally verify Solana escrow payment on-chain.</p>
+        </div>
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--green);">GET /proxy/fetch?url=</h4>
+          <p>One-liner proxy test. Send any URL, get the response through a phone's IP.</p>
+        </div>
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--green);">POST /proxy/session/:id/end</h4>
+          <p>End session and trigger automatic SOL payout to the node owner.</p>
+        </div>
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--accent);">TCP Proxy :1080</h4>
+          <p>Full HTTP/HTTPS CONNECT proxy. Use with curl, Python requests, or any HTTP client.</p>
+        </div>
+        <div class="feature">
+          <h4 style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--accent);">GET /admin/health</h4>
+          <p>Network health check. Nodes online, active sessions, uptime, Solana network status.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="container">
+      <h2>Ready to <span class="gradient" style="background: var(--gradient-text); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">join the network</span>?</h2>
+      <p>Whether you're building AI agents or have a spare phone — there's a place for you.</p>
+      <div class="cta-buttons">
+        <a href="#" class="btn-primary" id="connect-wallet">Connect Wallet</a>
+        <a href="https://github.com/chrissuperteam-merkel/clawdbot-network" class="btn-secondary">View on GitHub ↗</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p>Clawdbot Network — Decentralized Mobile Proxy on Solana</p>
+      <p style="margin-top: 8px;">
+        <a href="/clawdbot/dashboard">Dashboard</a> · 
+        <a href="https://github.com/chrissuperteam-merkel/clawdbot-network">GitHub</a> · 
+        <a href="#docs">API Docs</a> ·
+        Built on <a href="https://solana.com" style="color: var(--accent);">Solana</a>
+      </p>
+    </div>
+  </footer>
+
+  <!-- Live stats fetcher -->
+  <script>
+    const API = window.location.origin + '/clawdbot';
+
+    async function updateStats() {
+      try {
+        const health = await fetch(API + '/admin/health').then(r => r.json());
+        document.getElementById('stat-nodes').textContent = health.nodes;
+        document.getElementById('stat-sessions').textContent = health.activeSessions;
+      } catch(e) {
+        console.log('Stats fetch failed:', e);
+      }
+    }
+
+    updateStats();
+    setInterval(updateStats, 10000);
+
+    // Wallet Connect placeholder
+    document.getElementById('connect-wallet').addEventListener('click', (e) => {
+      e.preventDefault();
+      alert('Wallet Connect coming soon! Currently live on Solana Devnet.');
+    });
+  </script>
+
+</body>
+</html>
