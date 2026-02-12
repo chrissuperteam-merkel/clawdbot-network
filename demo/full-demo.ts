@@ -4,10 +4,12 @@
  * Demonstrates the complete flow:
  * 1. Register a real device (Solana Seeker) on Solana devnet
  * 2. Create a task with SOL payment escrow
- * 3. Route task to the device via device control API
- * 4. Execute task on real phone
+ * 3. Route task to the device via DroidRun OSS (local ADB execution)
+ * 4. Execute task on real phone — no cloud API, fully peer-to-peer
  * 5. Store proof of execution on-chain (memo)
  * 6. Release payment to device owner
+ * 
+ * Device control powered by DroidRun OSS: https://github.com/droidrun/droidrun
  */
 
 import {
@@ -22,11 +24,10 @@ import {
 } from '@solana/web3.js';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { executeTask, getScreenshot, listConnectedDevices, checkDroidRunInstalled } from '../api/device-executor';
 
 // Config
 const SOLANA_RPC = 'https://api.devnet.solana.com';
-const DEVICE_API_BASE = 'https://api.clawdbot.network/v1/tasks/';
-const SEEKER_DEVICE_ID = '2ad4dcc1-d807-4ef0-ac27-47d5731e3d7c';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const PLATFORM_FEE_PCT = 30;
 
@@ -34,11 +35,6 @@ const PLATFORM_FEE_PCT = 30;
 function loadKeypair(path: string): Keypair {
   const raw = JSON.parse(fs.readFileSync(path, 'utf-8'));
   return Keypair.fromSecretKey(new Uint8Array(raw));
-}
-
-function loadDeviceApiKey(): string {
-  const config = JSON.parse(fs.readFileSync(`${process.env.HOME}/.config/clawdbot/config.json`, 'utf-8'));
-  return config.api_key;
 }
 
 // Step 1: Register Device on Solana
@@ -55,6 +51,7 @@ async function registerDevice(
     deviceId,
     owner: ownerWallet.toBase58(),
     capabilities: ['screen', 'camera', 'gps', 'mobile_ip', 'apps'],
+    agent: 'droidrun-oss',
     timestamp: Date.now(),
   });
 
@@ -85,15 +82,12 @@ async function createTask(
   
   const taskId = crypto.randomUUID();
   
-  // Transfer SOL to escrow
   const tx = new Transaction().add(
-    // Payment to escrow
     SystemProgram.transfer({
       fromPubkey: creator.publicKey,
       toPubkey: escrowWallet,
       lamports: rewardLamports,
     }),
-    // Memo with task details
     new TransactionInstruction({
       keys: [{ pubkey: creator.publicKey, isSigner: true, isWritable: true }],
       programId: MEMO_PROGRAM_ID,
@@ -115,47 +109,32 @@ async function createTask(
   return { taskId, sig };
 }
 
-// Step 3: Execute Task on Real Device via Device API
+// Step 3: Execute Task on Real Device via DroidRun OSS (Local ADB)
 async function executeTaskOnDevice(
   taskDescription: string,
-  deviceId: string,
-  apiKey: string
-): Promise<{ deviceTaskId: string; status: string }> {
-  console.log('\n🤖 Step 3: Executing task on real device via device API...');
+  deviceId: string
+): Promise<{ output: string; status: string }> {
+  console.log('\n🤖 Step 3: Executing task on real device via DroidRun OSS...');
   console.log(`  📱 Device: ${deviceId}`);
   console.log(`  📋 Task: ${taskDescription}`);
+  console.log(`  🔧 Framework: DroidRun (https://github.com/droidrun/droidrun)`);
+  console.log(`  🔌 Connection: Local ADB (no cloud API)`);
 
-  const response = await fetch(DEVICE_API_BASE, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      device_id: deviceId,
-      prompt: taskDescription,
-      max_steps: 15,
-    }),
-  });
+  // Check prerequisites
+  const devices = listConnectedDevices();
+  console.log(`  📡 ADB devices found: ${devices.length > 0 ? devices.join(', ') : 'none'}`);
 
-  const data = await response.json() as any;
-  console.log(`  🚀 Device task started: ${data.id}`);
-  
-  // Poll for completion
-  let status = 'running';
-  let result = data;
-  while (status === 'running' || status === 'pending') {
-    await new Promise(r => setTimeout(r, 5000));
-    const statusResp = await fetch(`${DEVICE_API_BASE}${data.id}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-    });
-    result = await statusResp.json() as any;
-    status = result.status;
-    console.log(`  ⏳ Status: ${status}`);
+  if (!checkDroidRunInstalled()) {
+    console.log('  ⚠️  DroidRun not installed. Install with: pip install droidrun');
+    console.log('  📖 See: https://github.com/droidrun/droidrun');
   }
 
+  // Execute task via DroidRun locally through ADB
+  const result = await executeTask(deviceId, taskDescription);
   console.log(`  ✅ Task completed on device!`);
-  return { deviceTaskId: data.id, status };
+  console.log(`  📊 Steps executed: ${result.steps}`);
+  
+  return { output: result.output, status: result.status };
 }
 
 // Step 4: Complete Task — Store Proof & Release Payment
@@ -174,19 +153,16 @@ async function completeTask(
   const platformShare = totalReward - ownerShare;
 
   const tx = new Transaction().add(
-    // Pay device owner (70%)
     SystemProgram.transfer({
       fromPubkey: escrowKeypair.publicKey,
       toPubkey: deviceOwnerWallet,
       lamports: ownerShare,
     }),
-    // Pay platform (30%)
     SystemProgram.transfer({
       fromPubkey: escrowKeypair.publicKey,
       toPubkey: platformWallet,
       lamports: platformShare,
     }),
-    // Proof of execution memo
     new TransactionInstruction({
       keys: [{ pubkey: escrowKeypair.publicKey, isSigner: true, isWritable: true }],
       programId: MEMO_PROGRAM_ID,
@@ -211,23 +187,25 @@ async function completeTask(
 
 // Main Demo Flow
 async function main() {
-  console.log('═══════════════════════════════════════════');
+  console.log('═══════════════════════════════════════════════════');
   console.log('  🤖 CLAWDBOT NETWORK — End-to-End Demo');
-  console.log('═══════════════════════════════════════════');
+  console.log('  📱 Device control: DroidRun OSS (local ADB)');
+  console.log('  ⛓️  Payments: Solana devnet');
+  console.log('═══════════════════════════════════════════════════');
 
   const connection = new Connection(SOLANA_RPC, 'confirmed');
   
   // Load wallets
   const mainWallet = loadKeypair('/root/.config/solana/id.json');
-  const escrowWallet = Keypair.generate(); // Temp escrow for this demo
-  const deviceOwnerWallet = Keypair.generate(); // Simulated device owner
-  const platformWallet = mainWallet; // Platform = us for demo
+  const escrowWallet = Keypair.generate();
+  const deviceOwnerWallet = Keypair.generate();
+  const platformWallet = mainWallet;
 
   console.log(`\n🔑 Main wallet: ${mainWallet.publicKey.toBase58()}`);
   console.log(`🔑 Escrow wallet: ${escrowWallet.publicKey.toBase58()}`);
   console.log(`🔑 Device owner: ${deviceOwnerWallet.publicKey.toBase58()}`);
 
-  // Fund escrow and device owner accounts
+  // Fund accounts
   console.log('\n💸 Funding accounts...');
   const fundTx = new Transaction().add(
     SystemProgram.transfer({
@@ -238,45 +216,43 @@ async function main() {
     SystemProgram.transfer({
       fromPubkey: mainWallet.publicKey,
       toPubkey: deviceOwnerWallet.publicKey,
-      lamports: 0.01 * LAMPORTS_PER_SOL, // Rent
+      lamports: 0.01 * LAMPORTS_PER_SOL,
     })
   );
   await sendAndConfirmTransaction(connection, fundTx, [mainWallet]);
   console.log('  ✅ Accounts funded');
 
   // Step 1: Register Device
+  const deviceId = 'seeker-001';
   const regSig = await registerDevice(
     connection,
     mainWallet,
-    SEEKER_DEVICE_ID,
+    deviceId,
     deviceOwnerWallet.publicKey
   );
 
   // Step 2: Create Task with Payment
   const taskReward = 0.05 * LAMPORTS_PER_SOL;
+  const taskDescription = 'Open Chrome browser, navigate to solana.com, take a screenshot of the homepage';
   const { taskId } = await createTask(
     connection,
     mainWallet,
     escrowWallet.publicKey,
-    'Open Chrome browser, navigate to solana.com, take a screenshot of the homepage',
+    taskDescription,
     taskReward
   );
 
-  // Step 3: Execute on Real Device
-  const deviceApiKey = loadDeviceApiKey();
+  // Step 3: Execute on Real Device via DroidRun OSS
   let resultHash: string;
   
   try {
-    const result = await executeTaskOnDevice(
-      'Open Chrome browser, navigate to solana.com, take a screenshot of the homepage',
-      SEEKER_DEVICE_ID,
-      deviceApiKey
-    );
+    const result = await executeTaskOnDevice(taskDescription, deviceId);
     resultHash = crypto.createHash('sha256')
       .update(JSON.stringify(result))
       .digest('hex');
   } catch (err) {
-    console.log('  ⚠️ Device execution skipped (demo mode)');
+    console.log(`  ⚠️ Device execution skipped (demo mode): ${(err as Error).message}`);
+    console.log('  💡 To run for real: connect phone via ADB + install DroidRun');
     resultHash = crypto.createHash('sha256')
       .update(`demo-result-${taskId}-${Date.now()}`)
       .digest('hex');
@@ -294,15 +270,14 @@ async function main() {
   );
 
   // Summary
-  console.log('\n═══════════════════════════════════════════');
+  console.log('\n═══════════════════════════════════════════════════');
   console.log('  ✅ DEMO COMPLETE');
-  console.log('═══════════════════════════════════════════');
+  console.log('═══════════════════════════════════════════════════');
   console.log(`  Device Registration TX: ${regSig}`);
-  console.log(`  Task Escrow TX: see above`);
   console.log(`  Payment Release TX: ${completeSig}`);
   console.log(`  Result Hash: ${resultHash}`);
   console.log(`  Explorer: https://explorer.solana.com/tx/${completeSig}?cluster=devnet`);
-  console.log('═══════════════════════════════════════════');
+  console.log('═══════════════════════════════════════════════════');
 }
 
 main().catch(console.error);

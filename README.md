@@ -14,10 +14,10 @@ Old phones have everything agents need: screens, cameras, GPS, mobile IPs, app s
 
 **Clawdbot Network** turns old smartphones into nodes in a decentralized mobile compute network.
 
-1. **Install the app** on your old Android phone
-2. **Phone becomes a Clawdbot node** — available for AI agent tasks
-3. **Agents rent your device** — pay per task in USDC/SOL via Solana
-4. **You earn passively** — phone on charger + WiFi = income
+1. **Install [DroidRun](https://github.com/droidrun/droidrun)** on your old Android phone (open-source, 7.7k+ ⭐)
+2. **Register on-chain** — your device gets a Solana identity
+3. **Receive tasks peer-to-peer** — agents send tasks directly to your phone via local network/ADB
+4. **Earn passively** — phone on charger + WiFi = income, paid in SOL/USDC
 
 ### What agents can do on your phone:
 - 📱 Use any app (browser, social media, banking, delivery)
@@ -36,36 +36,55 @@ Old phones have everything agents need: screens, cameras, GPS, mobile IPs, app s
        │                      │                         │
        ▼                      ▼                         ▼
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│ Pay SOL/USDC │     │ Escrow & Match   │     │ Execute & Claim  │
-│ → Escrow PDA │     │ On-Chain State   │     │ Proof + Payment  │
+│ Pay SOL/USDC │     │ Escrow & Match   │     │ DroidRun Agent   │
+│ → Escrow PDA │     │ On-Chain State   │     │ (Local ADB/P2P)  │
 └──────────────┘     └──────────────────┘     └──────────────────┘
 ```
+
+**No cloud API. No hosted service. Fully peer-to-peer.**
+
+The Clawdbot Router matches tasks to devices. DroidRun executes tasks locally on the phone via ADB — the LLM controls the real Android UI directly.
+
+## Device Control: DroidRun OSS
+
+We use **[DroidRun](https://github.com/droidrun/droidrun)** (7.7k+ ⭐) — an open-source Android agent framework that lets LLMs control real phones.
+
+- **Fully open-source** — no paid API, no hosted service
+- **Local execution** — tasks run via ADB (USB or WiFi), not through any cloud
+- **LLM-powered** — supports OpenAI, Anthropic, and other providers
+- **Real device control** — tap, swipe, type, screenshot, navigate apps
+
+### How it works:
+1. Phone owner installs DroidRun agent + enables ADB
+2. Phone registers on Solana (gets on-chain identity)
+3. Router assigns tasks → DroidRun executes locally via ADB
+4. Proof of execution stored on-chain → payment released
 
 ## How It Works
 
 ### For Device Owners (Supply)
 ```bash
-# 1. Install Clawdbot app on old Android phone
-# 2. Register device on Solana
-curl -X POST http://api.clawdbot.network/devices/register \
-  -d '{"deviceId": "my-old-pixel", "wallet": "YOUR_SOLANA_WALLET"}'
+# 1. Install DroidRun on your Android phone
+#    See: https://github.com/droidrun/droidrun
+pip install droidrun
 
-# 3. Phone auto-accepts tasks, you earn SOL/USDC
+# 2. Enable ADB on your phone and connect via WiFi
+adb connect 192.168.1.42:5555
+
+# 3. Register device on Solana
+npx ts-node demo/full-demo.ts
+
+# 4. Phone receives tasks via local network, you earn SOL/USDC
 ```
 
 ### For Task Creators (Demand)
-```bash
-# 1. Create a task with payment
-curl -X POST http://api.clawdbot.network/tasks/create \
-  -d '{
-    "description": "Open Chrome, search for pizza near me, screenshot results",
-    "reward_lamports": 10000000,
-    "creator_wallet": "YOUR_WALLET"
-  }'
+```typescript
+import { executeTask } from './api/device-executor';
 
-# 2. Task gets assigned to available device
-# 3. Device executes, result hash stored on-chain
-# 4. Payment released automatically
+// Task gets routed to a registered device and executed locally
+const result = await executeTask('seeker-001', 
+  'Open Chrome, search for pizza near me, screenshot results'
+);
 ```
 
 ## Solana Integration
@@ -87,10 +106,40 @@ No subscriptions. No tokens. Just transaction fees on real work.
 
 ## Tech Stack
 
-- **Device Control**: Open-source device control framework for mobile agents
+- **Device Control**: [DroidRun](https://github.com/droidrun/droidrun) — open-source Android agent framework (7.7k+ ⭐)
 - **Blockchain**: Solana (devnet) — escrow, payments, proofs
 - **API**: Node.js + Express — task routing and device management
-- **Cloud API**: Remote device orchestration API
+- **Connection**: ADB over USB/WiFi — fully local, no cloud dependency
+
+## Setup
+
+```bash
+# Install DroidRun
+pip install droidrun
+
+# Install Node dependencies
+npm install
+
+# Configure devices in ~/.config/clawdbot/config.json
+cat > ~/.config/clawdbot/config.json << 'EOF'
+{
+  "devices": {
+    "seeker-001": {
+      "adb_target": "192.168.1.42:5555",
+      "llm_model": "gpt-4o"
+    }
+  },
+  "default_device": "seeker-001",
+  "llm_api_key": "your-openai-key"
+}
+EOF
+
+# Connect your phone via ADB
+adb connect 192.168.1.42:5555
+
+# Run the demo
+npx ts-node demo/full-demo.ts
+```
 
 ## Demo
 
@@ -98,8 +147,8 @@ Live demo on a real Solana Seeker device:
 
 1. Device registered on Solana devnet
 2. Task created with SOL escrow
-3. Task routed to Seeker via device control API
-4. Agent executes task on real phone
+3. Task routed to Seeker via **DroidRun OSS** (local ADB)
+4. Agent executes task on real phone — no cloud, fully local
 5. Result hash committed on-chain
 6. Payment released to device owner
 
@@ -113,10 +162,9 @@ clawdbot-network/
 │   └── deploy.ts
 ├── api/               # Router API
 │   ├── server.ts
-│   └── device-executor.ts
+│   └── device-executor.ts   # DroidRun OSS integration
 ├── demo/              # End-to-end demo scripts
 │   └── full-demo.ts
-├── PLAN.md
 └── README.md
 ```
 
@@ -126,7 +174,7 @@ clawdbot-network/
 - **AI agents need real devices** — cloud can't access real apps
 - **DePIN for mobile** — Helium did coverage, we do compute
 - **Solana micropayments** — only chain fast/cheap enough for per-task payments
-- **Framework exists** — open-source device control frameworks already handle Android/iOS with AI
+- **[DroidRun](https://github.com/droidrun/droidrun) exists** — battle-tested OSS framework for Android AI agents (7.7k+ ⭐)
 
 ## License
 
