@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const CONFIG_PATH = path.join(process.env.HOME || '/root', '.config/droidrun/config.json');
-const MOBILERUN_BASE = 'https://api.mobilerun.ai/v1/tasks/';
+const CONFIG_PATH = path.join(process.env.HOME || '/root', '.config/clawdbot/config.json');
+const DEVICE_API_BASE = 'https://api.clawdbot.network/v1/tasks/';
 const DEFAULT_DEVICE_ID = '2ad4dcc1-d807-4ef0-ac27-47d5731e3d7c';
 
 function getApiKey(): string {
@@ -12,7 +12,7 @@ function getApiKey(): string {
 
 export async function executeTask(deviceId: string, instruction: string): Promise<any> {
   const apiKey = getApiKey();
-  const response = await fetch(MOBILERUN_BASE, {
+  const response = await fetch(DEVICE_API_BASE, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -25,31 +25,31 @@ export async function executeTask(deviceId: string, instruction: string): Promis
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Mobilerun API error ${response.status}: ${text}`);
+    throw new Error(`Device API error ${response.status}: ${text}`);
   }
   return response.json();
 }
 
 export async function getTaskStatus(taskId: string): Promise<any> {
   const apiKey = getApiKey();
-  const response = await fetch(`${MOBILERUN_BASE}${taskId}`, {
+  const response = await fetch(`${DEVICE_API_BASE}${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Mobilerun status error ${response.status}: ${text}`);
+    throw new Error(`Device API status error ${response.status}: ${text}`);
   }
   return response.json();
 }
 
 export async function getScreenshot(taskId: string): Promise<any> {
   const apiKey = getApiKey();
-  const response = await fetch(`${MOBILERUN_BASE}${taskId}/screenshot`, {
+  const response = await fetch(`${DEVICE_API_BASE}${taskId}/screenshot`, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Mobilerun screenshot error ${response.status}: ${text}`);
+    throw new Error(`Device API screenshot error ${response.status}: ${text}`);
   }
   return response.json();
 }

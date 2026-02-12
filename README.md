@@ -87,10 +87,10 @@ No subscriptions. No tokens. Just transaction fees on real work.
 
 ## Tech Stack
 
-- **Device Control**: [DroidRun](https://github.com/droidrun/droidrun) (7.7k ⭐) — open-source mobile agent framework
+- **Device Control**: Open-source device control framework for mobile agents
 - **Blockchain**: Solana (devnet) — escrow, payments, proofs
 - **API**: Node.js + Express — task routing and device management
-- **Cloud API**: Mobilerun — remote device orchestration
+- **Cloud API**: Remote device orchestration API
 
 ## Demo
 
@@ -98,7 +98,7 @@ Live demo on a real Solana Seeker device:
 
 1. Device registered on Solana devnet
 2. Task created with SOL escrow
-3. Task routed to Seeker via Mobilerun API
+3. Task routed to Seeker via device control API
 4. Agent executes task on real phone
 5. Result hash committed on-chain
 6. Payment released to device owner
@@ -113,7 +113,7 @@ clawdbot-network/
 │   └── deploy.ts
 ├── api/               # Router API
 │   ├── server.ts
-│   └── mobilerun.ts
+│   └── device-executor.ts
 ├── demo/              # End-to-end demo scripts
 │   └── full-demo.ts
 ├── PLAN.md
@@ -126,7 +126,7 @@ clawdbot-network/
 - **AI agents need real devices** — cloud can't access real apps
 - **DePIN for mobile** — Helium did coverage, we do compute
 - **Solana micropayments** — only chain fast/cheap enough for per-task payments
-- **Framework exists** — DroidRun already controls Android/iOS with AI
+- **Framework exists** — open-source device control frameworks already handle Android/iOS with AI
 
 ## License
 

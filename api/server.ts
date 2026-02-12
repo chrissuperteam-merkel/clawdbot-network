@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
-import { executeTask, getTaskStatus, getScreenshot } from './mobilerun';
+import { executeTask, getTaskStatus, getScreenshot } from './device-executor';
 
 // Try to import Solana contract helpers (optional)
 let registerDeviceOnChain: ((wallet: string, deviceId: string) => Promise<any>) | null = null;
@@ -31,7 +31,7 @@ interface Task {
   creator_wallet: string;
   status: 'pending' | 'assigned' | 'running' | 'completed' | 'failed';
   assignedDevice?: string;
-  mobilerunTaskId?: string;
+  deviceTaskId?: string;
   resultHash?: string;
   screenshotUrl?: string;
   createdAt: string;
@@ -131,14 +131,14 @@ app.post('/api/tasks/:taskId/assign', async (req, res) => {
     task.assignedDevice = availableDevice.deviceId;
     availableDevice.status = 'busy';
 
-    // Trigger Mobilerun
+    // Trigger device execution
     task.status = 'running';
     try {
-      const mobilerunResult = await executeTask(availableDevice.deviceId, task.description);
-      task.mobilerunTaskId = mobilerunResult.task_id || mobilerunResult.id;
-      console.log(`[Mobilerun] Task started: ${task.mobilerunTaskId}`);
+      const deviceResult = await executeTask(availableDevice.deviceId, task.description);
+      task.deviceTaskId = deviceResult.task_id || deviceResult.id;
+      console.log(`[DeviceAPI] Task started: ${task.deviceTaskId}`);
     } catch (err: any) {
-      console.error('[Mobilerun] Execute failed:', err.message);
+      console.error('[DeviceAPI] Execute failed:', err.message);
       // Don't fail the assignment — device is still assigned
     }
 

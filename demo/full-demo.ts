@@ -4,7 +4,7 @@
  * Demonstrates the complete flow:
  * 1. Register a real device (Solana Seeker) on Solana devnet
  * 2. Create a task with SOL payment escrow
- * 3. Route task to the device via Mobilerun API
+ * 3. Route task to the device via device control API
  * 4. Execute task on real phone
  * 5. Store proof of execution on-chain (memo)
  * 6. Release payment to device owner
@@ -25,7 +25,7 @@ import * as crypto from 'crypto';
 
 // Config
 const SOLANA_RPC = 'https://api.devnet.solana.com';
-const MOBILERUN_API = 'https://api.mobilerun.ai/v1/tasks/';
+const DEVICE_API_BASE = 'https://api.clawdbot.network/v1/tasks/';
 const SEEKER_DEVICE_ID = '2ad4dcc1-d807-4ef0-ac27-47d5731e3d7c';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const PLATFORM_FEE_PCT = 30;
@@ -36,8 +36,8 @@ function loadKeypair(path: string): Keypair {
   return Keypair.fromSecretKey(new Uint8Array(raw));
 }
 
-function loadMobilerunKey(): string {
-  const config = JSON.parse(fs.readFileSync(`${process.env.HOME}/.config/droidrun/config.json`, 'utf-8'));
+function loadDeviceApiKey(): string {
+  const config = JSON.parse(fs.readFileSync(`${process.env.HOME}/.config/clawdbot/config.json`, 'utf-8'));
   return config.api_key;
 }
 
@@ -115,17 +115,17 @@ async function createTask(
   return { taskId, sig };
 }
 
-// Step 3: Execute Task on Real Device via Mobilerun
+// Step 3: Execute Task on Real Device via Device API
 async function executeTaskOnDevice(
   taskDescription: string,
   deviceId: string,
   apiKey: string
-): Promise<{ mobilerunTaskId: string; status: string }> {
-  console.log('\n🤖 Step 3: Executing task on real device via Mobilerun...');
+): Promise<{ deviceTaskId: string; status: string }> {
+  console.log('\n🤖 Step 3: Executing task on real device via device API...');
   console.log(`  📱 Device: ${deviceId}`);
   console.log(`  📋 Task: ${taskDescription}`);
 
-  const response = await fetch(MOBILERUN_API, {
+  const response = await fetch(DEVICE_API_BASE, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -139,14 +139,14 @@ async function executeTaskOnDevice(
   });
 
   const data = await response.json() as any;
-  console.log(`  🚀 Mobilerun task started: ${data.id}`);
+  console.log(`  🚀 Device task started: ${data.id}`);
   
   // Poll for completion
   let status = 'running';
   let result = data;
   while (status === 'running' || status === 'pending') {
     await new Promise(r => setTimeout(r, 5000));
-    const statusResp = await fetch(`${MOBILERUN_API}${data.id}`, {
+    const statusResp = await fetch(`${DEVICE_API_BASE}${data.id}`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
     });
     result = await statusResp.json() as any;
@@ -155,7 +155,7 @@ async function executeTaskOnDevice(
   }
 
   console.log(`  ✅ Task completed on device!`);
-  return { mobilerunTaskId: data.id, status };
+  return { deviceTaskId: data.id, status };
 }
 
 // Step 4: Complete Task — Store Proof & Release Payment
@@ -263,20 +263,20 @@ async function main() {
   );
 
   // Step 3: Execute on Real Device
-  const mobilerunKey = loadMobilerunKey();
+  const deviceApiKey = loadDeviceApiKey();
   let resultHash: string;
   
   try {
     const result = await executeTaskOnDevice(
       'Open Chrome browser, navigate to solana.com, take a screenshot of the homepage',
       SEEKER_DEVICE_ID,
-      mobilerunKey
+      deviceApiKey
     );
     resultHash = crypto.createHash('sha256')
       .update(JSON.stringify(result))
       .digest('hex');
   } catch (err) {
-    console.log('  ⚠️ Mobilerun execution skipped (demo mode)');
+    console.log('  ⚠️ Device execution skipped (demo mode)');
     resultHash = crypto.createHash('sha256')
       .update(`demo-result-${taskId}-${Date.now()}`)
       .digest('hex');
