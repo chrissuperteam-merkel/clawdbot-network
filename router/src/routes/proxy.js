@@ -9,8 +9,8 @@ const config = require('../config');
 function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests) {
   const router = Router();
 
-  // Create a proxy session
-  router.post('/session', (req, res) => {
+  // Create a proxy session (requires escrow payment)
+  router.post('/session', async (req, res) => {
     const { country, carrier, wallet, escrowTx } = req.body;
 
     const match = nodeManager.findNode({ country, carrier });
@@ -26,11 +26,30 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       }
     }
 
+    // Verify escrow payment on-chain
+    let paymentInfo = null;
+    if (escrowTx) {
+      paymentInfo = await solanaService.verifyEscrowPayment(escrowTx, config.SESSION_COST_SOL);
+      if (!paymentInfo.valid) {
+        return res.status(402).json({
+          error: 'Payment verification failed',
+          detail: paymentInfo.error,
+          required: {
+            amount: config.SESSION_COST_SOL,
+            currency: 'SOL',
+            recipient: config.PLATFORM_WALLET,
+            network: config.SOLANA_NETWORK,
+          },
+        });
+      }
+    }
+
     const session = sessionManager.create({
       nodeId: match.nodeId,
-      agentWallet: wallet || (req.agent && req.agent.wallet) || null,
+      agentWallet: wallet || (paymentInfo && paymentInfo.sender) || (req.agent && req.agent.wallet) || null,
       apiKey: req.apiKey || null,
       escrowTx: escrowTx || null,
+      paid: !!paymentInfo,
     });
 
     res.json({
@@ -47,10 +66,19 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
         header: `X-Session-Id: ${session.sessionId}`,
         usage: `curl -x http://HOST:${config.PROXY_PORT} -H "X-Session-Id: ${session.sessionId}" http://example.com`,
       },
-      pricing: {
-        costPerSession: config.SESSION_COST_SOL,
-        currency: 'SOL',
-        network: config.SOLANA_NETWORK,
+      payment: paymentInfo ? {
+        verified: true,
+        tx: escrowTx,
+        amount: paymentInfo.amount,
+        sender: paymentInfo.sender,
+      } : {
+        verified: false,
+        note: 'No escrow TX provided — session is unpaid (devnet mode)',
+        required: {
+          amount: config.SESSION_COST_SOL,
+          recipient: config.PLATFORM_WALLET,
+          network: config.SOLANA_NETWORK,
+        },
       },
       status: 'active',
     });
