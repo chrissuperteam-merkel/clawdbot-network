@@ -17,6 +17,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 
 data class ProxyStatus(
     val state: String = "disconnected",
@@ -31,16 +33,28 @@ class ProxyService : Service() {
         private const val TAG = "ClawdbotProxy"
         private const val CHANNEL_ID = "clawdbot_proxy"
         private const val NOTIFICATION_ID = 1
+        private const val MAX_RECONNECT_DELAY_MS = 60_000L
+        private const val HEARTBEAT_INTERVAL_MS = 25_000L
     }
 
     private var webSocket: WebSocket? = null
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS) // No read timeout for WebSocket
+        .build()
     private val gson = Gson()
     private val executor = Executors.newCachedThreadPool()
     private var nodeId: String? = null
     private var requestCount = 0
     private var totalBytes = 0L
     private var wallet: String? = null
+    private var serverUrl: String = ""
+    private var reconnectAttempts = 0
+    private var isRunning = false
+
+    // Active CONNECT tunnels: requestId -> Socket
+    private val activeTunnels = ConcurrentHashMap<String, java.net.Socket>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -50,41 +64,44 @@ class ProxyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val serverUrl = intent?.getStringExtra("serverUrl") ?: "wss://static.114.67.225.46.clients.your-server.de/clawdbot/node"
+        serverUrl = intent?.getStringExtra("serverUrl")
+            ?: "wss://static.114.67.225.46.clients.your-server.de/clawdbot/node"
         wallet = intent?.getStringExtra("wallet")
+        isRunning = true
 
         startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
-        connectToRouter(serverUrl)
+        connectToRouter()
 
         return START_STICKY
     }
 
     override fun onDestroy() {
+        isRunning = false
         webSocket?.close(1000, "Service stopped")
+        webSocket = null
+        // Close all active tunnels
+        activeTunnels.values.forEach { runCatching { it.close() } }
+        activeTunnels.clear()
         statusLiveData.postValue(ProxyStatus("disconnected"))
         super.onDestroy()
     }
 
-    private fun connectToRouter(serverUrl: String) {
+    // ─── WebSocket Connection ───
+
+    private fun connectToRouter() {
+        if (!isRunning) return
+
+        Log.i(TAG, "Connecting to $serverUrl (attempt ${reconnectAttempts + 1})")
         val request = Request.Builder().url(serverUrl).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.i(TAG, "Connected to router")
+                reconnectAttempts = 0
                 statusLiveData.postValue(ProxyStatus("connected"))
-                updateNotification("Connected — waiting for requests")
-
-                // Register with device info
-                val registration = JsonObject().apply {
-                    addProperty("type", "register")
-                    addProperty("device", "${Build.MANUFACTURER} ${Build.MODEL}")
-                    addProperty("carrier", getCarrierName())
-                    addProperty("country", getCountryCode())
-                    addProperty("wallet", wallet ?: "")
-                    addProperty("androidVersion", Build.VERSION.RELEASE)
-                    addProperty("sdk", Build.VERSION.SDK_INT)
-                }
-                ws.send(gson.toJson(registration))
+                updateNotification("Connected — registering...")
+                register(ws)
+                startHeartbeat(ws)
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -97,53 +114,97 @@ class ProxyService : Service() {
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                Log.i(TAG, "Disconnected: $reason")
+                Log.i(TAG, "Disconnected: $reason (code $code)")
                 statusLiveData.postValue(ProxyStatus("disconnected", nodeId, requestCount, totalBytes))
-                updateNotification("Disconnected")
-                // Auto-reconnect after 5s
-                executor.submit {
-                    Thread.sleep(5000)
-                    if (webSocket != null) connectToRouter(serverUrl.replace("wss://", "ws://"))
-                }
+                updateNotification("Disconnected — reconnecting...")
+                closeTunnels()
+                scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "Connection failed: ${t.message}")
                 statusLiveData.postValue(ProxyStatus("error", nodeId, requestCount, totalBytes))
-                updateNotification("Connection error — retrying...")
-                executor.submit {
-                    Thread.sleep(5000)
-                    connectToRouter(serverUrl)
-                }
+                updateNotification("Connection error — reconnecting...")
+                closeTunnels()
+                scheduleReconnect()
             }
         })
     }
+
+    private fun register(ws: WebSocket) {
+        val registration = JsonObject().apply {
+            addProperty("type", "register")
+            addProperty("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+            addProperty("carrier", getCarrierName())
+            addProperty("country", getCountryCode())
+            addProperty("wallet", wallet ?: "")
+            addProperty("androidVersion", Build.VERSION.RELEASE)
+            addProperty("sdk", Build.VERSION.SDK_INT)
+        }
+        ws.send(gson.toJson(registration))
+    }
+
+    private fun startHeartbeat(ws: WebSocket) {
+        executor.submit {
+            while (isRunning && ws.send(gson.toJson(JsonObject().apply {
+                    addProperty("type", "heartbeat")
+                    addProperty("timestamp", System.currentTimeMillis())
+                    addProperty("requestCount", requestCount)
+                    addProperty("totalBytes", totalBytes)
+                    addProperty("activeTunnels", activeTunnels.size)
+                }))) {
+                Thread.sleep(HEARTBEAT_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (!isRunning) return
+        reconnectAttempts++
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s max
+        val delay = minOf(2000L * (1L shl minOf(reconnectAttempts - 1, 5)), MAX_RECONNECT_DELAY_MS)
+        Log.i(TAG, "Reconnecting in ${delay}ms (attempt $reconnectAttempts)")
+        executor.submit {
+            Thread.sleep(delay)
+            if (isRunning) connectToRouter()
+        }
+    }
+
+    private fun closeTunnels() {
+        activeTunnels.values.forEach { runCatching { it.close() } }
+        activeTunnels.clear()
+    }
+
+    // ─── Message Handler ───
 
     private fun handleMessage(ws: WebSocket, msg: JsonObject) {
         when (msg.get("type")?.asString) {
             "welcome" -> {
                 nodeId = msg.get("nodeId")?.asString
-                Log.i(TAG, "Registered as node: $nodeId")
-                statusLiveData.postValue(ProxyStatus("connected", nodeId, requestCount, totalBytes))
+                Log.i(TAG, "Got welcome, nodeId: $nodeId")
             }
             "registered" -> {
                 nodeId = msg.get("nodeId")?.asString
                 Log.i(TAG, "Registration confirmed: $nodeId")
+                statusLiveData.postValue(ProxyStatus("connected", nodeId, requestCount, totalBytes))
+                updateNotification("Online — waiting for requests")
+            }
+            "heartbeat_ack" -> {
+                // Router is alive
             }
             "proxy_http" -> {
-                // Execute HTTP request on behalf of the agent
                 executor.submit { handleHttpProxy(ws, msg) }
             }
             "proxy_connect" -> {
-                // HTTPS tunnel
                 executor.submit { handleConnectProxy(ws, msg) }
             }
             "proxy_data" -> {
-                // Additional data for an existing tunnel
-                // (handled by the tunnel thread)
+                executor.submit { handleProxyData(msg) }
             }
         }
     }
+
+    // ─── HTTP Proxy ───
 
     private fun handleHttpProxy(ws: WebSocket, msg: JsonObject) {
         val requestId = msg.get("requestId")?.asString ?: return
@@ -154,7 +215,7 @@ class ProxyService : Service() {
             val requestBytes = Base64.decode(rawRequest, Base64.DEFAULT)
             val requestStr = String(requestBytes)
 
-            // Parse HTTP request
+            // Parse HTTP request line
             val lines = requestStr.split("\r\n")
             val firstLine = lines[0]
             val match = Regex("^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) (\\S+) HTTP").find(firstLine)
@@ -170,8 +231,9 @@ class ProxyService : Service() {
             conn.requestMethod = method
             conn.connectTimeout = 15000
             conn.readTimeout = 15000
+            conn.instanceFollowRedirects = true
 
-            // Copy headers
+            // Copy headers (skip proxy-internal ones)
             for (i in 1 until lines.size) {
                 val line = lines[i]
                 if (line.isBlank()) break
@@ -181,7 +243,8 @@ class ProxyService : Service() {
                     val value = line.substring(colonIdx + 1).trim()
                     if (key.equals("Host", ignoreCase = true) ||
                         key.equals("X-Session-Id", ignoreCase = true) ||
-                        key.equals("Proxy-Connection", ignoreCase = true)) continue
+                        key.equals("Proxy-Connection", ignoreCase = true) ||
+                        key.equals("Proxy-Authorization", ignoreCase = true)) continue
                     conn.setRequestProperty(key, value)
                 }
             }
@@ -192,16 +255,16 @@ class ProxyService : Service() {
             val responseBody = responseStream?.readBytes() ?: ByteArray(0)
             totalBytes += responseBody.size
 
-            // Build HTTP response
-            val statusLine = "HTTP/1.1 $responseCode ${conn.responseMessage}\r\n"
-            val headers = StringBuilder()
+            // Build full HTTP response
+            val sb = StringBuilder()
+            sb.append("HTTP/1.1 $responseCode ${conn.responseMessage ?: "OK"}\r\n")
             conn.headerFields.forEach { (key, values) ->
                 if (key != null) {
-                    values.forEach { headers.append("$key: $it\r\n") }
+                    values.forEach { sb.append("$key: $it\r\n") }
                 }
             }
-            headers.append("\r\n")
-            val fullResponse = statusLine.toByteArray() + headers.toString().toByteArray() + responseBody
+            sb.append("\r\n")
+            val fullResponse = sb.toString().toByteArray() + responseBody
 
             // Send back to router
             val response = JsonObject().apply {
@@ -212,12 +275,11 @@ class ProxyService : Service() {
                 addProperty("done", true)
             }
             ws.send(gson.toJson(response))
-
             updateStats()
             conn.disconnect()
 
         } catch (e: Exception) {
-            Log.e(TAG, "Proxy error: ${e.message}")
+            Log.e(TAG, "Proxy error [$requestId]: ${e.message}")
             val error = JsonObject().apply {
                 addProperty("type", "proxy_error")
                 addProperty("requestId", requestId)
@@ -226,6 +288,8 @@ class ProxyService : Service() {
             ws.send(gson.toJson(error))
         }
     }
+
+    // ─── HTTPS CONNECT Tunnel ───
 
     private fun handleConnectProxy(ws: WebSocket, msg: JsonObject) {
         val requestId = msg.get("requestId")?.asString ?: return
@@ -239,14 +303,17 @@ class ProxyService : Service() {
             updateStats()
 
             val socket = java.net.Socket(host, port)
+            socket.soTimeout = 30000
+            activeTunnels[requestId] = socket
+
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
 
-            // Read from target, send back to router
+            // Background thread: read from target → send to router
             executor.submit {
                 try {
-                    val buffer = ByteArray(8192)
-                    while (true) {
+                    val buffer = ByteArray(16384)
+                    while (!socket.isClosed) {
                         val bytesRead = input.read(buffer)
                         if (bytesRead == -1) break
                         totalBytes += bytesRead
@@ -260,7 +327,10 @@ class ProxyService : Service() {
                         }
                         ws.send(gson.toJson(response))
                     }
-                    // Send final done
+                } catch (e: Exception) {
+                    Log.e(TAG, "CONNECT read error [$requestId]: ${e.message}")
+                } finally {
+                    // Send done signal
                     val done = JsonObject().apply {
                         addProperty("type", "proxy_response")
                         addProperty("requestId", requestId)
@@ -268,15 +338,13 @@ class ProxyService : Service() {
                         addProperty("data", "")
                         addProperty("done", true)
                     }
-                    ws.send(gson.toJson(done))
-                } catch (e: Exception) {
-                    Log.e(TAG, "CONNECT read error: ${e.message}")
-                } finally {
-                    socket.close()
+                    runCatching { ws.send(gson.toJson(done)) }
+                    runCatching { socket.close() }
+                    activeTunnels.remove(requestId)
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "CONNECT error: ${e.message}")
+            Log.e(TAG, "CONNECT error [$requestId]: ${e.message}")
             val error = JsonObject().apply {
                 addProperty("type", "proxy_error")
                 addProperty("requestId", requestId)
@@ -285,6 +353,28 @@ class ProxyService : Service() {
             ws.send(gson.toJson(error))
         }
     }
+
+    /**
+     * Handle proxy_data: forward data from agent to the CONNECT tunnel target
+     */
+    private fun handleProxyData(msg: JsonObject) {
+        val requestId = msg.get("requestId")?.asString ?: return
+        val data = msg.get("data")?.asString ?: return
+
+        val socket = activeTunnels[requestId] ?: return
+        try {
+            val bytes = Base64.decode(data, Base64.DEFAULT)
+            socket.getOutputStream().write(bytes)
+            socket.getOutputStream().flush()
+            totalBytes += bytes.size
+        } catch (e: Exception) {
+            Log.e(TAG, "proxy_data write error [$requestId]: ${e.message}")
+            runCatching { socket.close() }
+            activeTunnels.remove(requestId)
+        }
+    }
+
+    // ─── Utilities ───
 
     private fun getCarrierName(): String {
         return try {
@@ -302,7 +392,7 @@ class ProxyService : Service() {
 
     private fun updateStats() {
         statusLiveData.postValue(ProxyStatus("connected", nodeId, requestCount, totalBytes))
-        updateNotification("Active — $requestCount requests | ${formatBytes(totalBytes)}")
+        updateNotification("Online — $requestCount reqs | ${formatBytes(totalBytes)}")
     }
 
     private fun formatBytes(bytes: Long): String = when {
