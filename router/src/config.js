@@ -15,6 +15,13 @@ module.exports = {
   SESSION_COST_SOL: 0.005,         // Cost per proxy session
   MIN_ESCROW_SOL: 0.005,           // Minimum escrow deposit
 
+  // Dynamic pricing tiers (SOL per GB) based on stealth score
+  PRICING_TIERS: {
+    premium: 0.01,      // Stealth 80-100 (mobile)
+    residential: 0.005,  // Stealth 50-79 (residential wifi)
+    basic: 0.002,        // Stealth 0-49 (unknown)
+  },
+
   // Timeouts
   SESSION_TIMEOUT_MS: 5 * 60 * 1000,    // 5 min idle timeout
   PROXY_REQUEST_TIMEOUT_MS: 15000,       // 15s per request

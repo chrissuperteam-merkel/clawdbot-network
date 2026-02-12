@@ -1,0 +1,7 @@
+{
+  "name": "clawdbot-client",
+  "version": "1.0.0",
+  "description": "JavaScript SDK for the Clawdbot mobile proxy network",
+  "main": "clawdbot-client.js",
+  "license": "MIT"
+}

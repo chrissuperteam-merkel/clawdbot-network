@@ -83,6 +83,7 @@ app.get('/', (req, res) => {
       'POST /proxy/session': 'Create a proxy session',
       'POST /proxy/session/:id/end': 'End session + trigger payout',
       'GET /proxy/fetch?url=': 'One-liner proxy test',
+      'POST /proxy/session/:id/rotate': 'Rotate IP (get new mobile IP)',
       'GET /admin/health': 'Health check',
       'GET /admin/balance': 'Platform wallet balance',
       'POST /admin/keys': 'Create API key (admin)',
@@ -94,7 +95,7 @@ app.get('/', (req, res) => {
 
 // --- HTTP + WebSocket Server ---
 const server = http.createServer(app);
-setupWebSocket(server, nodeManager, pendingRequests);
+setupWebSocket(server, nodeManager, pendingRequests, sessionManager);
 
 server.listen(config.PORT, '0.0.0.0', () => {
   console.log(`[ROUTER] Clawdbot Network Router v1.0.0`);

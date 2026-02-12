@@ -14,7 +14,7 @@ class SessionManager {
   /**
    * Create a new proxy session
    */
-  create({ nodeId, agentWallet, apiKey, escrowTx }) {
+  create({ nodeId, agentWallet, apiKey, escrowTx, pricePerGB }) {
     const sessionId = uuidv4();
     const session = {
       sessionId,
@@ -22,6 +22,7 @@ class SessionManager {
       agentWallet: agentWallet || null,
       apiKey: apiKey || null,
       escrowTx: escrowTx || null,
+      pricePerGB: pricePerGB || 0.002,
       startedAt: Date.now(),
       lastActivity: Date.now(),
       bytesIn: 0,
@@ -63,8 +64,18 @@ class SessionManager {
     session.endedAt = Date.now();
     session.duration = session.endedAt - session.startedAt;
 
+    // Calculate bandwidth-based cost
+    const totalBytes = session.bytesIn + session.bytesOut;
+    const totalGB = totalBytes / (1024 * 1024 * 1024);
+    session.cost = {
+      totalBytes,
+      totalGB: parseFloat(totalGB.toFixed(6)),
+      pricePerGB: session.pricePerGB,
+      totalSOL: parseFloat((totalGB * session.pricePerGB).toFixed(8)),
+    };
+
     this.nodeManager.decrementSessions(session.nodeId);
-    console.log(`[SESSION] Ended ${sessionId} — ${session.requestCount} requests, ${session.bytesIn + session.bytesOut} bytes, ${session.duration}ms`);
+    console.log(`[SESSION] Ended ${sessionId} — ${session.requestCount} requests, ${totalBytes} bytes, ${session.duration}ms, cost=${session.cost.totalSOL} SOL`);
 
     return session;
   }

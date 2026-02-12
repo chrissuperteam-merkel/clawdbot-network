@@ -13,6 +13,13 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
 
     clientSocket.once('data', (chunk) => {
       headerData = Buffer.concat([headerData, chunk]);
+
+      // SOCKS5 detection: first byte is 0x05
+      if (headerData[0] === 0x05) {
+        handleSocks5(clientSocket, headerData, nodeManager, sessionManager, pendingRequests);
+        return;
+      }
+
       const headerStr = headerData.toString();
 
       // Extract session ID from header
@@ -114,6 +121,116 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
   });
 
   return proxyServer;
+}
+
+function handleSocks5(clientSocket, initialData, nodeManager, sessionManager, pendingRequests) {
+  // SOCKS5 greeting: VER(1) NMETHODS(1) METHODS(n)
+  // Respond with no-auth: VER(1) METHOD(1) = 0x05 0x00
+  clientSocket.write(Buffer.from([0x05, 0x00]));
+
+  clientSocket.once('data', (connectReq) => {
+    // SOCKS5 connect: VER(1) CMD(1) RSV(1) ATYP(1) ADDR(var) PORT(2)
+    if (connectReq[0] !== 0x05 || connectReq[1] !== 0x01) {
+      // Only CONNECT (0x01) supported
+      const reply = Buffer.from([0x05, 0x07, 0x00, 0x01, 0,0,0,0, 0,0]);
+      clientSocket.write(reply);
+      clientSocket.end();
+      return;
+    }
+
+    let targetHost, targetPort;
+    const atyp = connectReq[3];
+
+    if (atyp === 0x01) {
+      // IPv4
+      targetHost = `${connectReq[4]}.${connectReq[5]}.${connectReq[6]}.${connectReq[7]}`;
+      targetPort = connectReq.readUInt16BE(8);
+    } else if (atyp === 0x03) {
+      // Domain
+      const domainLen = connectReq[4];
+      targetHost = connectReq.slice(5, 5 + domainLen).toString();
+      targetPort = connectReq.readUInt16BE(5 + domainLen);
+    } else if (atyp === 0x04) {
+      // IPv6 — not commonly used, reject
+      const reply = Buffer.from([0x05, 0x08, 0x00, 0x01, 0,0,0,0, 0,0]);
+      clientSocket.write(reply);
+      clientSocket.end();
+      return;
+    } else {
+      const reply = Buffer.from([0x05, 0x08, 0x00, 0x01, 0,0,0,0, 0,0]);
+      clientSocket.write(reply);
+      clientSocket.end();
+      return;
+    }
+
+    // Find a node
+    const match = nodeManager.findNode();
+    if (!match) {
+      const reply = Buffer.from([0x05, 0x03, 0x00, 0x01, 0,0,0,0, 0,0]); // network unreachable
+      clientSocket.write(reply);
+      clientSocket.end();
+      return;
+    }
+
+    const session = sessionManager.create({ nodeId: match.nodeId, apiKey: 'socks5', pricePerGB: match.node.pricePerGB });
+    const requestId = uuidv4();
+    const pending = { socket: clientSocket, nodeId: match.nodeId, bufferedData: [], ready: false, socks5: true };
+    pendingRequests.set(requestId, pending);
+
+    match.node.ws.send(JSON.stringify({
+      type: 'proxy_connect',
+      requestId,
+      sessionId: session.sessionId,
+      host: targetHost,
+      port: targetPort,
+    }));
+
+    // When connect_ready comes, send SOCKS5 success reply
+    const origReady = pending.ready;
+    const checkReady = setInterval(() => {
+      if (pending.ready) {
+        clearInterval(checkReady);
+        // SOCKS5 success: VER(1) REP(1)=0x00 RSV(1) ATYP(1)=0x01 ADDR(4) PORT(2)
+        const reply = Buffer.from([0x05, 0x00, 0x00, 0x01, 0,0,0,0, 0,0]);
+        clientSocket.write(reply);
+      }
+    }, 50);
+
+    const connectTimeout = setTimeout(() => {
+      if (!pending.ready) {
+        clearInterval(checkReady);
+        const reply = Buffer.from([0x05, 0x04, 0x00, 0x01, 0,0,0,0, 0,0]); // host unreachable
+        clientSocket.write(reply);
+        clientSocket.end();
+        pendingRequests.delete(requestId);
+      }
+    }, 15000);
+
+    clientSocket.on('data', (d) => {
+      sessionManager.recordActivity(session.sessionId, d.length, 0);
+      if (!pending.ready) {
+        pending.bufferedData.push(Buffer.from(d));
+        return;
+      }
+      match.node.ws.send(JSON.stringify({
+        type: 'proxy_data',
+        requestId,
+        sessionId: session.sessionId,
+        data: d.toString('base64'),
+      }));
+    });
+
+    clientSocket.on('close', () => {
+      clearTimeout(connectTimeout);
+      clearInterval(checkReady);
+      pendingRequests.delete(requestId);
+    });
+    clientSocket.on('error', () => {
+      clearTimeout(connectTimeout);
+      clearInterval(checkReady);
+      pendingRequests.delete(requestId);
+    });
+  });
 }
 
 module.exports = createTcpProxy;

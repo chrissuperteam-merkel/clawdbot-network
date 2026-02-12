@@ -11,9 +11,9 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
   // Create a proxy session (requires escrow payment)
   router.post('/session', async (req, res) => {
-    const { country, carrier, wallet, escrowTx } = req.body;
+    const { country, carrier, wallet, escrowTx, minStealth } = req.body;
 
-    const match = nodeManager.findNode({ country, carrier });
+    const match = nodeManager.findNode({ country, carrier, minStealth });
     if (!match) {
       return res.status(503).json({ error: 'No proxy nodes available matching criteria' });
     }
@@ -49,6 +49,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       agentWallet: wallet || (paymentInfo && paymentInfo.sender) || (req.agent && req.agent.wallet) || null,
       apiKey: req.apiKey || null,
       escrowTx: escrowTx || null,
+      pricePerGB: match.node.pricePerGB,
       paid: !!paymentInfo,
     });
 
@@ -59,6 +60,13 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
         device: match.node.info.device,
         carrier: match.node.info.carrier,
         country: match.node.info.country,
+        stealthScore: match.node.stealthScore,
+        qualityScore: nodeManager.qualityScorer.getQualityScore(match.nodeId),
+      },
+      pricing: {
+        tier: match.node.pricingTier,
+        pricePerGB: match.node.pricePerGB,
+        currency: 'SOL',
       },
       proxy: {
         host: `localhost`,
@@ -104,7 +112,52 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       bytesIn: session.bytesIn,
       bytesOut: session.bytesOut,
       requestCount: session.requestCount,
+      cost: session.cost || null,
       payout: payout || { note: 'No payout (missing node wallet or keypair)' },
+    });
+  });
+
+  // Rotate IP — ask phone to get a new IP
+  router.post('/session/:sessionId/rotate', (req, res) => {
+    const session = sessionManager.get(req.params.sessionId);
+    if (!session || session.status !== 'active') {
+      return res.status(404).json({ error: 'Active session not found' });
+    }
+
+    const node = nodeManager.get(session.nodeId);
+    if (!node || node.ws.readyState !== 1) {
+      return res.status(502).json({ error: 'Node disconnected' });
+    }
+
+    const rotateId = require('uuid').v4();
+    
+    // Send rotate command to phone
+    node.ws.send(JSON.stringify({
+      type: 'ip_rotate',
+      rotateId,
+      sessionId: session.sessionId,
+    }));
+
+    // Wait for phone to report new IP (via pending rotations)
+    const timeout = setTimeout(() => {
+      if (pendingRequests.has('rotate_' + rotateId)) {
+        pendingRequests.delete('rotate_' + rotateId);
+        if (!res.headersSent) {
+          res.status(504).json({ error: 'IP rotation timeout — phone did not respond in 30s' });
+        }
+      }
+    }, 30000);
+
+    pendingRequests.set('rotate_' + rotateId, {
+      resolve: (newIp) => {
+        clearTimeout(timeout);
+        pendingRequests.delete('rotate_' + rotateId);
+        // Update node IP
+        node.info.ip = newIp;
+        if (!res.headersSent) {
+          res.json({ sessionId: session.sessionId, newIp, rotated: true });
+        }
+      },
     });
   });
 
@@ -130,6 +183,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
     const session = sessionManager.create({
       nodeId: match.nodeId,
       apiKey: req.apiKey || 'fetch-api',
+      pricePerGB: match.node.pricePerGB,
     });
 
     const requestId = uuidv4();

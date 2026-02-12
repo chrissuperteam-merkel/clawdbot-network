@@ -3,32 +3,42 @@
  */
 const { WebSocket } = require('ws');
 const config = require('../config');
+const { calculateStealthScore, getPricePerGB, getPricingTier } = require('./stealth-scoring');
+const QualityScorer = require('./quality-scorer');
 
 class NodeManager {
   constructor() {
     this.nodes = new Map(); // nodeId -> { ws, info, sessions, lastHeartbeat }
+    this.qualityScorer = new QualityScorer();
     this._startCleanup();
   }
 
   register(nodeId, ws, info) {
+    const nodeInfo = {
+      device: info.device || 'unknown',
+      carrier: info.carrier || 'unknown',
+      country: info.country || 'unknown',
+      connectionType: info.connectionType || 'unknown',
+      ip: info.ip || null,
+      wallet: info.wallet || null,
+      registeredAt: Date.now(),
+    };
+    const stealthScore = calculateStealthScore(nodeInfo);
     this.nodes.set(nodeId, {
       ws,
-      info: {
-        device: info.device || 'unknown',
-        carrier: info.carrier || 'unknown',
-        country: info.country || 'unknown',
-        connectionType: info.connectionType || 'unknown',
-        ip: info.ip || null,
-        wallet: info.wallet || null,
-        registeredAt: Date.now(),
-      },
+      info: nodeInfo,
+      stealthScore,
+      pricePerGB: getPricePerGB(stealthScore),
+      pricingTier: getPricingTier(stealthScore),
       sessions: 0,
       lastHeartbeat: Date.now(),
     });
-    console.log(`[NODE] Registered: ${nodeId} (${info.device}, ${info.carrier}, ${info.country})`);
+    this.qualityScorer.initNode(nodeId);
+    console.log(`[NODE] Registered: ${nodeId} (${info.device}, ${info.carrier}, ${info.country}, stealth=${stealthScore})`);
   }
 
   unregister(nodeId) {
+    this.qualityScorer.recordDisconnect(nodeId);
     this.nodes.delete(nodeId);
     console.log(`[NODE] Disconnected: ${nodeId}`);
   }
@@ -50,17 +60,26 @@ class NodeManager {
   /**
    * Find best available node matching criteria
    */
-  findNode({ country, carrier } = {}) {
+  findNode({ country, carrier, minStealth } = {}) {
     let best = null;
     let bestId = null;
+    let bestScore = -1;
 
     for (const [id, node] of this.nodes) {
       if (node.ws.readyState !== WebSocket.OPEN) continue;
       if (country && node.info.country !== country) continue;
       if (carrier && node.info.carrier !== carrier) continue;
-      if (!best || node.sessions < best.sessions) {
+      if (minStealth && node.stealthScore < minStealth) continue;
+
+      // Combined score: quality + fewer sessions is better
+      const qualityScore = this.qualityScorer.getQualityScore(id);
+      const sessionPenalty = node.sessions * 10;
+      const score = qualityScore - sessionPenalty;
+
+      if (!best || score > bestScore) {
         best = node;
         bestId = id;
+        bestScore = score;
       }
     }
 
@@ -89,6 +108,10 @@ class NodeManager {
           ...node.info,
           activeSessions: node.sessions,
           uptime: Date.now() - node.info.registeredAt,
+          stealthScore: node.stealthScore,
+          pricePerGB: node.pricePerGB,
+          pricingTier: node.pricingTier,
+          qualityScore: this.qualityScorer.getQualityScore(id),
         });
       }
     }
