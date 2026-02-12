@@ -202,6 +202,9 @@ class ProxyService : Service() {
             "proxy_data" -> {
                 executor.submit { handleProxyData(msg) }
             }
+            "ip_rotate" -> {
+                executor.submit { handleIpRotate(ws, msg) }
+            }
         }
     }
 
@@ -381,6 +384,79 @@ class ProxyService : Service() {
             Log.e(TAG, "proxy_data write error [$requestId]: ${e.message}")
             runCatching { socket.close() }
             activeTunnels.remove(requestId)
+        }
+    }
+
+    // ─── IP Rotation ───
+
+    private fun handleIpRotate(ws: WebSocket, msg: JsonObject) {
+        val requestId = msg.get("requestId")?.asString ?: return
+        Log.i(TAG, "[$requestId] IP rotation requested")
+
+        try {
+            // Try toggling WiFi to get a new IP
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+
+            // Attempt WiFi reconnect (disconnect → reconnect)
+            @Suppress("DEPRECATION")
+            val disconnected = wifiManager.disconnect()
+            if (disconnected) {
+                Log.i(TAG, "[$requestId] WiFi disconnected, reconnecting in 2s...")
+                Thread.sleep(2000)
+                @Suppress("DEPRECATION")
+                wifiManager.reconnect()
+                Thread.sleep(3000) // Wait for reconnection
+            } else {
+                // Fallback: toggle WiFi off/on
+                Log.i(TAG, "[$requestId] Disconnect failed, toggling WiFi...")
+                @Suppress("DEPRECATION")
+                wifiManager.isWifiEnabled = false
+                Thread.sleep(2000)
+                @Suppress("DEPRECATION")
+                wifiManager.isWifiEnabled = true
+                Thread.sleep(5000) // Wait for WiFi to come back up
+            }
+
+            // Get new IP
+            val newIp = getCurrentIp()
+            Log.i(TAG, "[$requestId] IP rotation complete, new IP: $newIp")
+
+            val result = JsonObject().apply {
+                addProperty("type", "ip_rotate_result")
+                addProperty("requestId", requestId)
+                addProperty("newIp", newIp ?: "unknown")
+                addProperty("success", newIp != null)
+            }
+            ws.send(gson.toJson(result))
+
+        } catch (e: Exception) {
+            Log.e(TAG, "[$requestId] IP rotation failed: ${e.message}")
+            val result = JsonObject().apply {
+                addProperty("type", "ip_rotate_result")
+                addProperty("requestId", requestId)
+                addProperty("success", false)
+                addProperty("error", e.message ?: "unknown error")
+            }
+            ws.send(gson.toJson(result))
+        }
+    }
+
+    private fun getCurrentIp(): String? {
+        return try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                val addresses = iface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val addr = addresses.nextElement()
+                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                        return addr.hostAddress
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            null
         }
     }
 

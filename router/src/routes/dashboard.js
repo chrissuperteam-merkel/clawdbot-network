@@ -46,10 +46,10 @@ function createDashboardRoutes(nodeManager, sessionManager, solanaService) {
   <div class="grid" id="stats"></div>
   
   <h2>📱 Proxy Nodes</h2>
-  <table id="nodes"><thead><tr><th>Status</th><th>Device</th><th>Country</th><th>Carrier</th><th>Sessions</th><th>Uptime</th></tr></thead><tbody></tbody></table>
+  <table id="nodes"><thead><tr><th>Status</th><th>Device</th><th>Country</th><th>Carrier</th><th>Stealth</th><th>Quality</th><th>Tier</th><th>Price/GB</th><th>Sessions</th><th>Uptime</th></tr></thead><tbody></tbody></table>
   
   <h2>🔄 Active Sessions</h2>
-  <table id="sessions"><thead><tr><th>Session ID</th><th>Node</th><th>Requests</th><th>Bytes</th><th>Duration</th></tr></thead><tbody></tbody></table>
+  <table id="sessions"><thead><tr><th>Session ID</th><th>Node</th><th>Requests</th><th>Bytes</th><th>Duration</th><th>Cost (SOL)</th></tr></thead><tbody></tbody></table>
 
   <h2>📊 Recent Activity</h2>
   <div class="log" id="log"></div>
@@ -101,22 +101,31 @@ function createDashboardRoutes(nodeManager, sessionManager, solanaService) {
         // Nodes table
         const ntbody = document.querySelector('#nodes tbody');
         if (nodes.nodes.length === 0) {
-          ntbody.innerHTML = '<tr><td colspan="6" style="color:#666">No nodes connected</td></tr>';
+          ntbody.innerHTML = '<tr><td colspan="10" style="color:#666">No nodes connected</td></tr>';
         } else {
-          ntbody.innerHTML = nodes.nodes.map(n => '<tr>' +
+          ntbody.innerHTML = nodes.nodes.map(n => {
+            var sc = n.stealthScore || 0;
+            var scColor = sc > 70 ? '#00ff88' : sc > 40 ? '#ffaa00' : '#ff4444';
+            var qc = n.qualityScore || 0;
+            var qcColor = qc > 70 ? '#00ff88' : qc > 40 ? '#ffaa00' : '#ff4444';
+            return '<tr>' +
             '<td><span class="dot dot-green"></span>Online</td>' +
             '<td>' + n.device + '</td>' +
             '<td>' + n.country + '</td>' +
             '<td>' + n.carrier + '</td>' +
+            '<td style="color:' + scColor + ';font-weight:bold">' + sc + '</td>' +
+            '<td style="color:' + qcColor + ';font-weight:bold">' + qc + '</td>' +
+            '<td>' + (n.pricingTier || '-') + '</td>' +
+            '<td>' + (n.pricePerGB || '-') + ' SOL</td>' +
             '<td>' + n.activeSessions + '</td>' +
             '<td>' + formatDuration(n.uptime) + '</td>' +
-          '</tr>').join('');
+          '</tr>';}).join('');
         }
 
         // Sessions table
         const stbody = document.querySelector('#sessions tbody');
         if (sessions.sessions.length === 0) {
-          stbody.innerHTML = '<tr><td colspan="5" style="color:#666">No active sessions</td></tr>';
+          stbody.innerHTML = '<tr><td colspan="6" style="color:#666">No active sessions</td></tr>';
         } else {
           stbody.innerHTML = sessions.sessions.map(s => '<tr>' +
             '<td style="font-size:12px">' + s.sessionId.slice(0,8) + '...</td>' +
@@ -124,6 +133,7 @@ function createDashboardRoutes(nodeManager, sessionManager, solanaService) {
             '<td>' + s.requestCount + '</td>' +
             '<td>' + formatBytes(s.bytesIn + s.bytesOut) + '</td>' +
             '<td>' + formatDuration(Date.now() - s.startedAt) + '</td>' +
+            '<td>' + (s.pricing ? ((s.bytesIn + s.bytesOut) / (1024*1024*1024) * s.pricing.pricePerGB).toFixed(6) : '-') + '</td>' +
           '</tr>').join('');
         }
 

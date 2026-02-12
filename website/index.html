@@ -352,8 +352,8 @@
   <section class="hero">
     <div class="container">
       <div class="hero-badge"><span class="dot"></span> Live on Solana Devnet</div>
-      <h1>The <span class="gradient">Decentralized Proxy</span><br>Network for AI Agents</h1>
-      <p class="hero-sub">AI agents need real IPs. Data center IPs get blocked everywhere. Clawdbot turns idle phones into proxy nodes — powered by Solana micropayments.</p>
+      <h1>Turn Your Old Phone Into a <span class="gradient">Proxy Node</span></h1>
+      <p class="hero-sub">Earn SOL for sharing your mobile connection. AI agents need real IPs — data center IPs get blocked everywhere. Clawdbot turns idle phones into proxy nodes, powered by Solana micropayments.</p>
 
       <div class="role-select">
         <a href="#agents" class="role-card">
@@ -381,8 +381,8 @@
           <div class="stat-label">Active Sessions</div>
         </div>
         <div class="stat">
-          <div class="stat-value" id="stat-cost">0.005</div>
-          <div class="stat-label">SOL per Session</div>
+          <div class="stat-value" id="stat-countries">-</div>
+          <div class="stat-label">Network Countries</div>
         </div>
         <div class="stat">
           <div class="stat-value" id="stat-split">70%</div>
@@ -475,6 +475,36 @@
               <p style="font-size: 13px; color: var(--text-dim);">Select nodes by country. Get a German IP, a US IP — real residential endpoints.</p>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing Tiers -->
+  <section class="section" id="pricing">
+    <div class="container">
+      <div class="section-label">Pricing</div>
+      <h2>Access real mobile IPs</h2>
+      <p class="section-desc">Pay per GB in SOL. Pricing depends on node quality — mobile 5G costs more than WiFi.</p>
+
+      <div class="features">
+        <div class="feature" style="border-color: var(--accent);">
+          <div class="feature-icon">🥇</div>
+          <h4>Premium</h4>
+          <p style="font-size: 28px; font-weight: 800; color: var(--accent); margin: 12px 0;">0.01 SOL/GB</p>
+          <p>5G mobile connections. Stealth score &gt;70. Highest anonymity, real carrier IPs. Best for anti-detection.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🥈</div>
+          <h4>Residential</h4>
+          <p style="font-size: 28px; font-weight: 800; color: var(--green); margin: 12px 0;">0.005 SOL/GB</p>
+          <p>4G/LTE mobile or quality WiFi. Stealth score 40–70. Good balance of cost and quality.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🥉</div>
+          <h4>Basic</h4>
+          <p style="font-size: 28px; font-weight: 800; color: var(--orange); margin: 12px 0;">0.002 SOL/GB</p>
+          <p>WiFi connections. Stealth score &lt;40. Budget option for high-volume, non-sensitive tasks.</p>
         </div>
       </div>
     </div>
@@ -588,9 +618,14 @@
 
     async function updateStats() {
       try {
-        const health = await fetch(API + '/admin/health').then(r => r.json());
+        const [health, nodesData] = await Promise.all([
+          fetch(API + '/admin/health').then(r => r.json()),
+          fetch(API + '/nodes').then(r => r.json()).catch(() => ({nodes:[]}))
+        ]);
         document.getElementById('stat-nodes').textContent = health.nodes;
         document.getElementById('stat-sessions').textContent = health.activeSessions;
+        const countries = new Set(nodesData.nodes.map(n => n.country).filter(Boolean));
+        document.getElementById('stat-countries').textContent = countries.size || health.nodes > 0 ? countries.size : 0;
       } catch(e) {
         console.log('Stats fetch failed:', e);
       }
