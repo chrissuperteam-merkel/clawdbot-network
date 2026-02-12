@@ -33,11 +33,18 @@ class MainActivity : AppCompatActivity() {
         serverUrlInput = findViewById(R.id.serverUrlInput)
         toggleButton = findViewById(R.id.toggleButton)
 
-        // Request notification permission on Android 13+
+        // Request permissions
+        val permsNeeded = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                permsNeeded.add(Manifest.permission.POST_NOTIFICATIONS)
             }
+        }
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            permsNeeded.add(Manifest.permission.READ_PHONE_STATE)
+        }
+        if (permsNeeded.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permsNeeded.toTypedArray(), 1)
         }
 
         // Load or generate wallet

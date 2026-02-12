@@ -56,10 +56,37 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
           port: targetPort,
         }));
 
-        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        // Don't send 200 until phone confirms connection
+        // For now, small delay to let phone open socket
+        console.log(`[PROXY] CONNECT tunnel ${requestId.slice(0,8)} → ${targetHost}:${targetPort}`);
+
+        // Buffer client data until we know phone socket is ready
+        const bufferedData = [];
+        let phoneReady = false;
+
+        // Set phone ready after a delay (phone needs time to open socket)
+        setTimeout(() => {
+          phoneReady = true;
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          // Flush buffered data
+          for (const d of bufferedData) {
+            node.ws.send(JSON.stringify({
+              type: 'proxy_data',
+              requestId,
+              sessionId: session.sessionId,
+              data: d.toString('base64'),
+            }));
+          }
+          bufferedData.length = 0;
+        }, 1500); // 1.5s should be enough for socket open
 
         clientSocket.on('data', (d) => {
+          console.log(`[PROXY] CONNECT data out ${requestId.slice(0,8)}: ${d.length} bytes (ready=${phoneReady})`);
           sessionManager.recordActivity(session.sessionId, d.length);
+          if (!phoneReady) {
+            bufferedData.push(Buffer.from(d));
+            return;
+          }
           node.ws.send(JSON.stringify({
             type: 'proxy_data',
             requestId,

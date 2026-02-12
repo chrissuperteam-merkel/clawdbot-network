@@ -74,9 +74,10 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests) {
 
     case 'proxy_response': {
       const pending = pendingRequests.get(msg.requestId);
+      const body = msg.data ? Buffer.from(msg.data, 'base64') : Buffer.alloc(0);
+      console.log(`[PROXY] Response for ${msg.requestId?.slice(0,8)}: ${body.length} bytes, done=${msg.done}`);
       if (pending?.socket && !pending.socket.destroyed) {
-        const body = Buffer.from(msg.data, 'base64');
-        pending.socket.write(body);
+        if (body.length > 0) pending.socket.write(body);
         if (msg.done) {
           pending.socket.end();
           pendingRequests.delete(msg.requestId);

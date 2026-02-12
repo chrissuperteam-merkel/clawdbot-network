@@ -77,7 +77,23 @@ class SolanaService {
     }
 
     try {
-      const recipient = new PublicKey(nodeWallet);
+      // Try to parse as base58, if it fails try hex→base58
+      let recipient;
+      try {
+        recipient = new PublicKey(nodeWallet);
+      } catch {
+        // Try interpreting as hex-encoded pubkey bytes
+        try {
+          const bytes = Buffer.from(nodeWallet, 'hex');
+          if (bytes.length === 32) {
+            recipient = new PublicKey(bytes);
+          } else {
+            return { success: false, error: `Invalid wallet format (${bytes.length} bytes, need 32)` };
+          }
+        } catch {
+          return { success: false, error: 'Invalid wallet address format' };
+        }
+      }
       const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
 
       const tx = new Transaction().add(

@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace 'network.clawdbot.proxy'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "network.clawdbot.proxy"
         minSdk 26
-        targetSdk 34
-        versionCode 3
-        versionName "1.0.3"
+        targetSdk 35
+        versionCode 4
+        versionName "1.1.0"
     }
 
     buildTypes {

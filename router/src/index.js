@@ -27,6 +27,7 @@ const ApiKeyManager = require('./services/api-key-manager');
 const createNodeRoutes = require('./routes/nodes');
 const createProxyRoutes = require('./routes/proxy');
 const createAdminRoutes = require('./routes/admin');
+const createDashboardRoutes = require('./routes/dashboard');
 
 // Infra
 const setupWebSocket = require('./websocket-handler');
@@ -69,6 +70,7 @@ app.use(optionalApiKey(apiKeyManager));
 app.use('/nodes', createNodeRoutes(nodeManager));
 app.use('/proxy', createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests));
 app.use('/admin', createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager));
+app.use('/dashboard', createDashboardRoutes(nodeManager, sessionManager, solanaService));
 
 // Root — API overview
 app.get('/', (req, res) => {
@@ -84,6 +86,7 @@ app.get('/', (req, res) => {
       'GET /admin/health': 'Health check',
       'GET /admin/balance': 'Platform wallet balance',
       'POST /admin/keys': 'Create API key (admin)',
+      'GET /dashboard': 'Live monitoring dashboard',
     },
     docs: 'https://github.com/chrissuperteam-merkel/clawdbot-network',
   });
