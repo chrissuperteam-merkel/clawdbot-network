@@ -1,0 +1,16 @@
+{
+  "name": "clawdbot-router",
+  "version": "1.0.0",
+  "description": "Clawdbot Proxy Router — connects AI agents to phone proxy nodes",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "express": "^4.18.2",
+    "socks": "^2.7.3",
+    "@solana/web3.js": "^1.87.6",
+    "uuid": "^9.0.0"
+  }
+}
