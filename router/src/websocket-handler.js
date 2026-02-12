@@ -3,6 +3,9 @@
  */
 const { WebSocketServer, WebSocket } = require('ws');
 const { v4: uuidv4 } = require('uuid');
+const { child } = require('./services/logger');
+
+const log = child('websocket');
 
 function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
   const wss = new WebSocketServer({ server, path: '/node' });
@@ -10,7 +13,7 @@ function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
   wss.on('connection', (ws, req) => {
     const nodeId = uuidv4();
     const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-    console.log(`[NODE] Phone connected: ${nodeId} (${clientIp})`);
+    log.info({ nodeId, ip: clientIp }, 'Phone connected');
 
     ws.isAlive = true;
     ws.on('pong', () => {
@@ -23,7 +26,6 @@ function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
         const msg = JSON.parse(data.toString());
         handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionManager);
       } catch {
-        // Binary data — proxy response (requestId[36] + payload)
         handleBinaryData(nodeId, data, pendingRequests, sessionManager);
       }
     });
@@ -33,14 +35,12 @@ function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
     });
 
     ws.on('error', (err) => {
-      console.error(`[NODE] Error for ${nodeId}: ${err.message}`);
+      log.error({ nodeId, err: err.message }, 'Node error');
     });
 
-    // Welcome message
     ws.send(JSON.stringify({ type: 'welcome', nodeId }));
   });
 
-  // Ping/pong heartbeat
   setInterval(() => {
     wss.clients.forEach((ws) => {
       if (!ws.isAlive) return ws.terminate();
@@ -76,11 +76,13 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
     case 'proxy_response': {
       const pending = pendingRequests.get(msg.requestId);
       const body = msg.data ? Buffer.from(msg.data, 'base64') : Buffer.alloc(0);
-      console.log(`[PROXY] Response for ${msg.requestId?.slice(0,8)}: ${body.length} bytes, done=${msg.done}`);
-      // Track response bytes as bytesOut (data flowing back to agent)
+      log.debug({ requestId: msg.requestId?.slice(0, 8), bytes: body.length, done: msg.done }, 'Proxy response');
+
+      // Fix 4: Data FROM phone = bytesIn for the agent (response data)
       if (msg.sessionId && sessionManager && body.length > 0) {
-        sessionManager.recordActivity(msg.sessionId, 0, body.length);
+        sessionManager.recordActivity(msg.sessionId, body.length, 0);
       }
+
       if (pending?.socket && !pending.socket.destroyed) {
         if (body.length > 0) pending.socket.write(body);
         if (msg.done) {
@@ -92,14 +94,11 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
     }
 
     case 'connect_ready': {
-      // Phone has opened the TCP socket to target — tell client the tunnel is ready
       const pending = pendingRequests.get(msg.requestId);
       if (pending?.socket && !pending.socket.destroyed) {
-        // SOCKS5 connections handle their own reply
         if (!pending.socks5) {
           pending.socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         }
-        // Flush any buffered client data
         if (pending.bufferedData?.length) {
           const node = nodeManager.get(pending.nodeId);
           if (node?.ws?.readyState === 1) {
@@ -115,7 +114,7 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
           pending.bufferedData = [];
         }
         pending.ready = true;
-        console.log(`[PROXY] CONNECT tunnel ${msg.requestId?.slice(0,8)} ready`);
+        log.info({ requestId: msg.requestId?.slice(0, 8) }, 'CONNECT tunnel ready');
       }
       break;
     }
@@ -126,7 +125,7 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
       if (pending?.resolve) {
         pending.resolve(msg.newIp || msg.ip || 'unknown');
       }
-      console.log(`[NODE] IP rotated for ${nodeId}: ${msg.newIp || msg.ip}`);
+      log.info({ nodeId, newIp: msg.newIp || msg.ip }, 'IP rotated');
       break;
     }
 
@@ -136,12 +135,12 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
         pending.socket.end();
         pendingRequests.delete(msg.requestId);
       }
-      console.log(`[PROXY] Error from ${nodeId}: ${msg.error}`);
+      log.warn({ nodeId, error: msg.error }, 'Proxy error from node');
       break;
     }
 
     default:
-      console.log(`[NODE] Unknown message type from ${nodeId}: ${msg.type}`);
+      log.warn({ nodeId, type: msg.type }, 'Unknown message type');
   }
 }
 
@@ -152,6 +151,10 @@ function handleBinaryData(nodeId, data, pendingRequests, sessionManager) {
     const pending = pendingRequests.get(requestId);
     if (pending?.socket && !pending.socket.destroyed) {
       pending.socket.write(payload);
+      // Fix 4: binary data from phone = bytesIn for agent
+      if (pending.sessionId && sessionManager) {
+        sessionManager.recordActivity(pending.sessionId, payload.length, 0);
+      }
     }
   }
 }

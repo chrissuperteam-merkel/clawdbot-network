@@ -3,18 +3,19 @@
  */
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
+const { child } = require('./logger');
+
+const log = child('session-manager');
 
 class SessionManager {
-  constructor(nodeManager) {
-    this.sessions = new Map(); // sessionId -> Session
+  constructor(nodeManager, db) {
+    this.sessions = new Map();
     this.nodeManager = nodeManager;
+    this.db = db || null;
     this._startCleanup();
   }
 
-  /**
-   * Create a new proxy session
-   */
-  create({ nodeId, agentWallet, apiKey, escrowTx, pricePerGB }) {
+  create({ nodeId, agentWallet, apiKey, escrowTx, pricePerGB, paid }) {
     const sessionId = uuidv4();
     const session = {
       sessionId,
@@ -22,6 +23,7 @@ class SessionManager {
       agentWallet: agentWallet || null,
       apiKey: apiKey || null,
       escrowTx: escrowTx || null,
+      paid: !!paid,
       pricePerGB: pricePerGB || 0.002,
       startedAt: Date.now(),
       lastActivity: Date.now(),
@@ -33,7 +35,7 @@ class SessionManager {
 
     this.sessions.set(sessionId, session);
     this.nodeManager.incrementSessions(nodeId);
-    console.log(`[SESSION] Created ${sessionId} → node ${nodeId}`);
+    log.info({ sessionId, nodeId, paid: session.paid }, 'Session created');
     return session;
   }
 
@@ -41,9 +43,6 @@ class SessionManager {
     return this.sessions.get(sessionId);
   }
 
-  /**
-   * Record activity on a session
-   */
   recordActivity(sessionId, bytesIn = 0, bytesOut = 0) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -53,9 +52,6 @@ class SessionManager {
     session.requestCount++;
   }
 
-  /**
-   * End a session and return usage stats
-   */
   end(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -64,7 +60,6 @@ class SessionManager {
     session.endedAt = Date.now();
     session.duration = session.endedAt - session.startedAt;
 
-    // Calculate bandwidth-based cost
     const totalBytes = session.bytesIn + session.bytesOut;
     const totalGB = totalBytes / (1024 * 1024 * 1024);
     session.cost = {
@@ -75,14 +70,18 @@ class SessionManager {
     };
 
     this.nodeManager.decrementSessions(session.nodeId);
-    console.log(`[SESSION] Ended ${sessionId} — ${session.requestCount} requests, ${totalBytes} bytes, ${session.duration}ms, cost=${session.cost.totalSOL} SOL`);
+    log.info({ sessionId, requests: session.requestCount, bytes: totalBytes, duration: session.duration, cost: session.cost.totalSOL }, 'Session ended');
+
+    // Persist to DB
+    if (this.db) {
+      try { this.db.saveSession(session); } catch (e) {
+        log.warn({ err: e.message }, 'Failed to save session to DB');
+      }
+    }
 
     return session;
   }
 
-  /**
-   * Get active session count for an API key
-   */
   activeCountByKey(apiKey) {
     let count = 0;
     for (const [, s] of this.sessions) {
@@ -91,30 +90,22 @@ class SessionManager {
     return count;
   }
 
-  /**
-   * List all active sessions
-   */
   listActive() {
     return [...this.sessions.values()].filter(s => s.status === 'active');
   }
 
-  /**
-   * Cleanup idle sessions
-   */
   _startCleanup() {
     setInterval(() => {
       const now = Date.now();
       for (const [id, session] of this.sessions) {
         if (session.status !== 'active') {
-          // Remove completed sessions after 5 min
           if (session.endedAt && now - session.endedAt > 5 * 60 * 1000) {
             this.sessions.delete(id);
           }
           continue;
         }
-        // Timeout idle active sessions
         if (now - session.lastActivity > config.SESSION_TIMEOUT_MS) {
-          console.log(`[SESSION] Idle timeout: ${id}`);
+          log.info({ sessionId: id }, 'Idle timeout');
           this.end(id);
         }
       }

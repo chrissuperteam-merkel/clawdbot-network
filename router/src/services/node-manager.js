@@ -5,12 +5,30 @@ const { WebSocket } = require('ws');
 const config = require('../config');
 const { calculateStealthScore, getPricePerGB, getPricingTier } = require('./stealth-scoring');
 const QualityScorer = require('./quality-scorer');
+const { child } = require('./logger');
+
+const log = child('node-manager');
 
 class NodeManager {
-  constructor() {
-    this.nodes = new Map(); // nodeId -> { ws, info, sessions, lastHeartbeat }
+  constructor(db) {
+    this.nodes = new Map();
     this.qualityScorer = new QualityScorer();
+    this.db = db || null;
+    this._loadHistory();
     this._startCleanup();
+  }
+
+  _loadHistory() {
+    if (!this.db) return;
+    try {
+      const rows = this.db.loadNodeHistory();
+      for (const row of rows) {
+        this.qualityScorer.initNode(row.nodeId);
+      }
+      log.info({ count: rows.length }, 'Loaded node history from DB');
+    } catch (e) {
+      log.warn({ err: e.message }, 'Failed to load node history');
+    }
   }
 
   register(nodeId, ws, info) {
@@ -34,13 +52,23 @@ class NodeManager {
       lastHeartbeat: Date.now(),
     });
     this.qualityScorer.initNode(nodeId);
-    console.log(`[NODE] Registered: ${nodeId} (${info.device}, ${info.carrier}, ${info.country}, stealth=${stealthScore})`);
+
+    // Persist to DB
+    if (this.db) {
+      try {
+        this.db.upsertNode(nodeId, nodeInfo, stealthScore, this.qualityScorer.getQualityScore(nodeId));
+      } catch (e) {
+        log.warn({ err: e.message }, 'Failed to upsert node');
+      }
+    }
+
+    log.info({ nodeId, device: info.device, carrier: info.carrier, country: info.country, stealth: stealthScore }, 'Node registered');
   }
 
   unregister(nodeId) {
     this.qualityScorer.recordDisconnect(nodeId);
     this.nodes.delete(nodeId);
-    console.log(`[NODE] Disconnected: ${nodeId}`);
+    log.info({ nodeId }, 'Node disconnected');
   }
 
   heartbeat(nodeId) {
@@ -58,9 +86,18 @@ class NodeManager {
   }
 
   /**
-   * Find best available node matching criteria
+   * Find best available node matching criteria.
+   * Fix 7: weighted scoring with session load + preferredNodeId support
    */
-  findNode({ country, carrier, minStealth } = {}) {
+  findNode({ country, carrier, minStealth, preferredNodeId } = {}) {
+    // If preferred node requested and available, use it
+    if (preferredNodeId) {
+      const node = this.nodes.get(preferredNodeId);
+      if (node && node.ws.readyState === WebSocket.OPEN) {
+        return { nodeId: preferredNodeId, node };
+      }
+    }
+
     let best = null;
     let bestId = null;
     let bestScore = -1;
@@ -71,10 +108,36 @@ class NodeManager {
       if (carrier && node.info.carrier !== carrier) continue;
       if (minStealth && node.stealthScore < minStealth) continue;
 
-      // Combined score: quality + fewer sessions is better
       const qualityScore = this.qualityScorer.getQualityScore(id);
-      const sessionPenalty = node.sessions * 10;
-      const score = qualityScore - sessionPenalty;
+      const sessionLoad = node.sessions / config.MAX_SESSIONS_PER_NODE;
+      const score = qualityScore * 0.6 + (1 - Math.min(1, sessionLoad)) * 100 * 0.4;
+
+      if (!best || score > bestScore) {
+        best = node;
+        bestId = id;
+        bestScore = score;
+      }
+    }
+
+    return bestId ? { nodeId: bestId, node: best } : null;
+  }
+
+  /**
+   * Find next best node excluding a set of nodeIds (for failover)
+   */
+  findAlternativeNode(excludeNodeIds = [], criteria = {}) {
+    let best = null;
+    let bestId = null;
+    let bestScore = -1;
+
+    for (const [id, node] of this.nodes) {
+      if (excludeNodeIds.includes(id)) continue;
+      if (node.ws.readyState !== WebSocket.OPEN) continue;
+      if (criteria.country && node.info.country !== criteria.country) continue;
+
+      const qualityScore = this.qualityScorer.getQualityScore(id);
+      const sessionLoad = node.sessions / config.MAX_SESSIONS_PER_NODE;
+      const score = qualityScore * 0.6 + (1 - Math.min(1, sessionLoad)) * 100 * 0.4;
 
       if (!best || score > bestScore) {
         best = node;
@@ -96,9 +159,6 @@ class NodeManager {
     if (node) node.sessions = Math.max(0, node.sessions - 1);
   }
 
-  /**
-   * List all online nodes (public info only)
-   */
   listNodes() {
     const nodes = [];
     for (const [id, node] of this.nodes) {
@@ -126,9 +186,6 @@ class NodeManager {
     return c;
   }
 
-  /**
-   * Cleanup stale nodes (missed heartbeats)
-   */
   _startCleanup() {
     setInterval(() => {
       const now = Date.now();
@@ -138,7 +195,7 @@ class NodeManager {
           continue;
         }
         if (now - node.lastHeartbeat > config.NODE_HEARTBEAT_TIMEOUT_MS) {
-          console.log(`[NODE] Stale node removed: ${id}`);
+          log.info({ nodeId: id }, 'Stale node removed');
           node.ws.close();
           this.nodes.delete(id);
         }

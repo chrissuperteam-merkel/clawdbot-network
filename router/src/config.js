@@ -28,8 +28,12 @@ module.exports = {
   NODE_HEARTBEAT_INTERVAL_MS: 30000,     // 30s heartbeat
   NODE_HEARTBEAT_TIMEOUT_MS: 5 * 60 * 1000, // 5 min before disconnect
 
+  // Payment enforcement (false for devnet, true for mainnet)
+  REQUIRE_PAYMENT: process.env.REQUIRE_PAYMENT === 'true' || false,
+
   // Rate limiting
   MAX_SESSIONS_PER_KEY: 10,
+  MAX_SESSIONS_PER_NODE: 5,
   MAX_REQUESTS_PER_MINUTE: 60,
 
   // Platform wallet (receives platform share)

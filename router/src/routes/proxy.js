@@ -5,20 +5,36 @@ const { Router } = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { PassThrough } = require('stream');
 const config = require('../config');
+const { child } = require('../services/logger');
+
+const log = child('proxy');
 
 function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests) {
   const router = Router();
 
-  // Create a proxy session (requires escrow payment)
+  // Create a proxy session
   router.post('/session', async (req, res) => {
-    const { country, carrier, wallet, escrowTx, minStealth } = req.body;
+    const { country, carrier, wallet, escrowTx, minStealth, preferredNodeId } = req.body;
 
-    const match = nodeManager.findNode({ country, carrier, minStealth });
+    // Fix 2: Payment enforcement
+    if (config.REQUIRE_PAYMENT && !escrowTx) {
+      return res.status(402).json({
+        error: 'Payment required',
+        detail: 'REQUIRE_PAYMENT is enabled. Provide escrowTx.',
+        required: {
+          amount: config.SESSION_COST_SOL,
+          currency: 'SOL',
+          recipient: config.PLATFORM_WALLET,
+          network: config.SOLANA_NETWORK,
+        },
+      });
+    }
+
+    const match = nodeManager.findNode({ country, carrier, minStealth, preferredNodeId });
     if (!match) {
       return res.status(503).json({ error: 'No proxy nodes available matching criteria' });
     }
 
-    // Check session limit per API key
     if (req.apiKey) {
       const activeCount = sessionManager.activeCountByKey(req.apiKey);
       if (activeCount >= config.MAX_SESSIONS_PER_KEY) {
@@ -53,7 +69,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       paid: !!paymentInfo,
     });
 
-    res.json({
+    const response = {
       sessionId: session.sessionId,
       nodeId: match.nodeId,
       node: {
@@ -69,27 +85,25 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
         currency: 'SOL',
       },
       proxy: {
-        host: `localhost`,
+        host: 'localhost',
         port: config.PROXY_PORT,
         header: `X-Session-Id: ${session.sessionId}`,
         usage: `curl -x http://HOST:${config.PROXY_PORT} -H "X-Session-Id: ${session.sessionId}" http://example.com`,
       },
-      payment: paymentInfo ? {
-        verified: true,
-        tx: escrowTx,
-        amount: paymentInfo.amount,
-        sender: paymentInfo.sender,
-      } : {
-        verified: false,
-        note: 'No escrow TX provided — session is unpaid (devnet mode)',
-        required: {
-          amount: config.SESSION_COST_SOL,
-          recipient: config.PLATFORM_WALLET,
-          network: config.SOLANA_NETWORK,
-        },
-      },
       status: 'active',
-    });
+    };
+
+    if (paymentInfo) {
+      response.payment = { verified: true, tx: escrowTx, amount: paymentInfo.amount, sender: paymentInfo.sender };
+    } else {
+      response.payment = {
+        verified: false,
+        warning: 'No escrow TX provided — session is unpaid (devnet mode)',
+        required: { amount: config.SESSION_COST_SOL, recipient: config.PLATFORM_WALLET, network: config.SOLANA_NETWORK },
+      };
+    }
+
+    res.json(response);
   });
 
   // End a proxy session + trigger payout
@@ -97,12 +111,14 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
     const session = sessionManager.end(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // Attempt payout to node owner
+    // Fix 2: Only attempt payout if session was paid
     let payout = null;
-    const node = nodeManager.get(session.nodeId);
-    if (node && node.info.wallet && solanaService.platformKeypair) {
-      const nodeAmount = config.SESSION_COST_SOL * config.NODE_SHARE;
-      payout = await solanaService.releasePayment(node.info.wallet, nodeAmount);
+    if (session.paid) {
+      const node = nodeManager.get(session.nodeId);
+      if (node && node.info.wallet && solanaService.platformKeypair) {
+        const nodeAmount = config.SESSION_COST_SOL * config.NODE_SHARE;
+        payout = await solanaService.releasePayment(node.info.wallet, nodeAmount, session.sessionId);
+      }
     }
 
     res.json({
@@ -113,11 +129,12 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       bytesOut: session.bytesOut,
       requestCount: session.requestCount,
       cost: session.cost || null,
-      payout: payout || { note: 'No payout (missing node wallet or keypair)' },
+      paid: session.paid,
+      payout: payout || { note: session.paid ? 'No payout (missing node wallet or keypair)' : 'No payout (unpaid session)' },
     });
   });
 
-  // Rotate IP — ask phone to get a new IP
+  // Rotate IP — Fix 5: only for mobile connections
   router.post('/session/:sessionId/rotate', (req, res) => {
     const session = sessionManager.get(req.params.sessionId);
     if (!session || session.status !== 'active') {
@@ -129,16 +146,23 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       return res.status(502).json({ error: 'Node disconnected' });
     }
 
+    // Fix 5: Check connection type — WiFi cannot rotate IP
+    const connType = (node.info.connectionType || '').toLowerCase();
+    if (connType === 'wifi' || (!connType.includes('mobile') && !connType.includes('cellular') && connType !== 'mobile_5g' && connType !== 'mobile_4g' && connType !== 'mobile_3g')) {
+      return res.status(400).json({
+        error: 'IP rotation not available for WiFi connections. Mobile connection required.',
+        connectionType: node.info.connectionType,
+        note: 'WiFi reconnection gives the same IP (same router). Only mobile connections (airplane mode toggle) get a new CGNAT IP.',
+      });
+    }
+
     const rotateId = require('uuid').v4();
-    
-    // Send rotate command to phone
     node.ws.send(JSON.stringify({
       type: 'ip_rotate',
       rotateId,
       sessionId: session.sessionId,
     }));
 
-    // Wait for phone to report new IP (via pending rotations)
     const timeout = setTimeout(() => {
       if (pendingRequests.has('rotate_' + rotateId)) {
         pendingRequests.delete('rotate_' + rotateId);
@@ -152,7 +176,6 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       resolve: (newIp) => {
         clearTimeout(timeout);
         pendingRequests.delete('rotate_' + rotateId);
-        // Update node IP
         node.info.ip = newIp;
         if (!res.headersSent) {
           res.json({ sessionId: session.sessionId, newIp, rotated: true });
@@ -169,7 +192,6 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
   });
 
   // Simple fetch — one-liner proxy test
-  // GET /proxy/fetch?url=https://httpbin.org/ip
   router.get('/fetch', (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).json({ error: 'Missing ?url= parameter', example: '/proxy/fetch?url=https://httpbin.org/ip' });
@@ -188,11 +210,10 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
     const requestId = uuidv4();
 
-    // Build raw HTTP request
     const rawReq = `GET ${targetUrl} HTTP/1.1\r\nHost: ${parsed.host}\r\nConnection: close\r\nAccept: */*\r\nUser-Agent: ClawdBot-Proxy/1.0\r\n\r\n`;
+    // Fix 4: rawReq sent TO phone = bytesOut for agent
     sessionManager.recordActivity(session.sessionId, 0, rawReq.length);
 
-    // Send to phone via existing proxy_http message type
     match.node.ws.send(JSON.stringify({
       type: 'proxy_http',
       requestId,
@@ -200,7 +221,6 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       rawRequest: Buffer.from(rawReq).toString('base64'),
     }));
 
-    // Collect response via virtual socket
     const chunks = [];
     const timeout = setTimeout(() => {
       pendingRequests.delete(requestId);
@@ -214,6 +234,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
     virtualSocket.on('data', (chunk) => {
       chunks.push(chunk);
+      // Fix 4: data FROM phone = bytesIn for agent
       sessionManager.recordActivity(session.sessionId, chunk.length, 0);
     });
     virtualSocket.on('end', () => {
@@ -238,7 +259,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
       });
     });
 
-    console.log(`[FETCH] ${targetUrl} via ${match.nodeId} (${match.node.info.device})`);
+    log.info({ url: targetUrl, nodeId: match.nodeId, device: match.node.info.device }, 'Fetch request');
   });
 
   return router;

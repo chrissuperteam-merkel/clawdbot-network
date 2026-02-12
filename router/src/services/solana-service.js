@@ -3,16 +3,20 @@
  */
 const {
   Connection, PublicKey, Keypair, Transaction,
-  SystemProgram, LAMPORTS_PER_SOL, TransactionMessage,
-  VersionedTransaction, sendAndConfirmTransaction,
+  SystemProgram, LAMPORTS_PER_SOL,
+  sendAndConfirmTransaction,
 } = require('@solana/web3.js');
 const fs = require('fs');
 const config = require('../config');
+const { child } = require('./logger');
+
+const log = child('solana');
 
 class SolanaService {
-  constructor() {
+  constructor(db) {
     this.connection = new Connection(config.SOLANA_RPC, 'confirmed');
     this.platformWallet = new PublicKey(config.PLATFORM_WALLET);
+    this.db = db || null;
     this._loadKeypair();
   }
 
@@ -20,17 +24,13 @@ class SolanaService {
     try {
       const raw = JSON.parse(fs.readFileSync(config.PLATFORM_KEYPAIR_PATH, 'utf-8'));
       this.platformKeypair = Keypair.fromSecretKey(Uint8Array.from(raw));
-      console.log(`[SOLANA] Platform wallet: ${this.platformKeypair.publicKey.toBase58()}`);
+      log.info({ wallet: this.platformKeypair.publicKey.toBase58() }, 'Platform wallet loaded');
     } catch (e) {
-      console.warn(`[SOLANA] No keypair found at ${config.PLATFORM_KEYPAIR_PATH} — payment features disabled`);
+      log.warn({ path: config.PLATFORM_KEYPAIR_PATH }, 'No keypair found — payment features disabled');
       this.platformKeypair = null;
     }
   }
 
-  /**
-   * Verify an escrow payment TX from agent
-   * Returns { valid, amount, sender } or { valid: false, error }
-   */
   async verifyEscrowPayment(txSignature, expectedAmount) {
     try {
       const tx = await this.connection.getTransaction(txSignature, {
@@ -41,7 +41,6 @@ class SolanaService {
       if (!tx) return { valid: false, error: 'Transaction not found' };
       if (tx.meta.err) return { valid: false, error: 'Transaction failed on-chain' };
 
-      // Check that platform wallet received funds
       const preBalance = tx.meta.preBalances;
       const postBalance = tx.meta.postBalances;
       const accountKeys = tx.transaction.message.staticAccountKeys || tx.transaction.message.accountKeys;
@@ -57,7 +56,7 @@ class SolanaService {
       if (platformIdx === -1) return { valid: false, error: 'Platform wallet not in transaction' };
 
       const received = (postBalance[platformIdx] - preBalance[platformIdx]) / LAMPORTS_PER_SOL;
-      if (received < expectedAmount * 0.99) { // 1% tolerance for fees
+      if (received < expectedAmount * 0.99) {
         return { valid: false, error: `Insufficient payment: ${received} SOL (expected ${expectedAmount})` };
       }
 
@@ -69,53 +68,67 @@ class SolanaService {
   }
 
   /**
-   * Release payment to node owner after session completes
+   * Release payment to node owner with retry logic and TX verification
    */
-  async releasePayment(nodeWallet, amount) {
+  async releasePayment(nodeWallet, amount, sessionId) {
     if (!this.platformKeypair) {
       return { success: false, error: 'Platform keypair not loaded' };
     }
 
+    let recipient;
     try {
-      // Try to parse as base58, if it fails try hex→base58
-      let recipient;
+      recipient = new PublicKey(nodeWallet);
+    } catch {
       try {
-        recipient = new PublicKey(nodeWallet);
-      } catch {
-        // Try interpreting as hex-encoded pubkey bytes
-        try {
-          const bytes = Buffer.from(nodeWallet, 'hex');
-          if (bytes.length === 32) {
-            recipient = new PublicKey(bytes);
-          } else {
-            return { success: false, error: `Invalid wallet format (${bytes.length} bytes, need 32)` };
-          }
-        } catch {
-          return { success: false, error: 'Invalid wallet address format' };
+        const bytes = Buffer.from(nodeWallet, 'hex');
+        if (bytes.length === 32) {
+          recipient = new PublicKey(bytes);
+        } else {
+          return { success: false, error: `Invalid wallet format (${bytes.length} bytes, need 32)` };
         }
+      } catch {
+        return { success: false, error: 'Invalid wallet address format' };
       }
-      const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
+    }
 
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: this.platformKeypair.publicKey,
-          toPubkey: recipient,
-          lamports,
-        })
-      );
+    const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
+    const MAX_RETRIES = 3;
 
-      const signature = await sendAndConfirmTransaction(this.connection, tx, [this.platformKeypair]);
-      console.log(`[SOLANA] Payment released: ${amount} SOL → ${nodeWallet} (${signature})`);
-      return { success: true, signature, amount };
-    } catch (e) {
-      console.error(`[SOLANA] Payment failed: ${e.message}`);
-      return { success: false, error: e.message };
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const tx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: this.platformKeypair.publicKey,
+            toPubkey: recipient,
+            lamports,
+          })
+        );
+
+        const signature = await sendAndConfirmTransaction(this.connection, tx, [this.platformKeypair]);
+
+        // Verify TX landed
+        const confirmed = await this.connection.getSignatureStatus(signature);
+        log.info({ amount, recipient: nodeWallet, signature, attempt }, 'Payment released');
+
+        // Save payout to DB
+        if (this.db) {
+          try { this.db.savePayout(sessionId, nodeWallet, amount, signature, true, null); } catch {}
+        }
+
+        return { success: true, signature, amount };
+      } catch (e) {
+        log.warn({ attempt, error: e.message }, 'Payment attempt failed');
+        if (attempt === MAX_RETRIES) {
+          if (this.db) {
+            try { this.db.savePayout(sessionId, nodeWallet, amount, null, false, e.message); } catch {}
+          }
+          return { success: false, error: e.message };
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
   }
 
-  /**
-   * Get wallet balance
-   */
   async getBalance(wallet) {
     try {
       const balance = await this.connection.getBalance(new PublicKey(wallet));

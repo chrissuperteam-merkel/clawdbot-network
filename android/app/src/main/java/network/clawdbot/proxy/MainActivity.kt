@@ -9,8 +9,13 @@ import android.telephony.TelephonyManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
@@ -59,6 +64,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Fix 9: Check for updates
+        checkForUpdate()
+
         // Listen for status updates
         ProxyService.statusLiveData.observe(this) { status ->
             statusText.text = "Status: ${status.state}"
@@ -84,6 +92,44 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopProxyService() {
         stopService(Intent(this, ProxyService::class.java))
+    }
+
+    private fun checkForUpdate() {
+        Thread {
+            try {
+                val url = URL("https://static.114.67.225.46.clients.your-server.de/clawdbot/version.json")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                val json = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val obj = JSONObject(json)
+                val minVersion = obj.getString("minVersion")
+                val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+                if (compareVersions(currentVersion, minVersion) < 0) {
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("Update Required")
+                            .setMessage("A new version (${obj.getString("version")}) is required. Current: $currentVersion")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently ignore update check failures
+            }
+        }.start()
+    }
+
+    private fun compareVersions(v1: String, v2: String): Int {
+        val p1 = v1.split(".").map { it.toIntOrNull() ?: 0 }
+        val p2 = v2.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(p1.size, p2.size)) {
+            val a = p1.getOrElse(i) { 0 }
+            val b = p2.getOrElse(i) { 0 }
+            if (a != b) return a.compareTo(b)
+        }
+        return 0
     }
 
     private fun formatBytes(bytes: Long): String {
