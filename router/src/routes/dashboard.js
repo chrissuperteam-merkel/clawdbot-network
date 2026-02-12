@@ -57,7 +57,9 @@ function createDashboardRoutes(nodeManager, sessionManager, solanaService) {
   <p class="refresh">Auto-refreshes every 5s</p>
 
   <script>
-    const BASE = window.location.origin;
+    // Detect if behind a reverse proxy with path prefix (e.g. /clawdbot)
+    const pathParts = window.location.pathname.split('/dashboard')[0];
+    const BASE = pathParts ? window.location.origin + pathParts : window.location.origin;
     const logs = [];
 
     function addLog(msg) {

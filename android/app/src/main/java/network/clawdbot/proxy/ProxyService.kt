@@ -137,6 +137,7 @@ class ProxyService : Service() {
             addProperty("device", "${Build.MANUFACTURER} ${Build.MODEL}")
             addProperty("carrier", getCarrierName())
             addProperty("country", getCountryCode())
+            addProperty("connectionType", getConnectionType())
             addProperty("wallet", wallet ?: "")
             addProperty("androidVersion", Build.VERSION.RELEASE)
             addProperty("sdk", Build.VERSION.SDK_INT)
@@ -303,16 +304,25 @@ class ProxyService : Service() {
             updateStats()
 
             val socket = java.net.Socket(host, port)
-            socket.soTimeout = 30000
+            socket.soTimeout = 60000
+            socket.tcpNoDelay = true
             activeTunnels[requestId] = socket
 
             val input = socket.getInputStream()
-            val output = socket.getOutputStream()
+
+            // Tell router we're ready — router will send 200 Connection Established to client
+            val ready = JsonObject().apply {
+                addProperty("type", "connect_ready")
+                addProperty("requestId", requestId)
+                addProperty("sessionId", sessionId)
+            }
+            ws.send(gson.toJson(ready))
+            Log.i(TAG, "[$requestId] CONNECT ready, tunnel open to $host:$port")
 
             // Background thread: read from target → send to router
             executor.submit {
                 try {
-                    val buffer = ByteArray(16384)
+                    val buffer = ByteArray(32768)
                     while (!socket.isClosed) {
                         val bytesRead = input.read(buffer)
                         if (bytesRead == -1) break
@@ -379,7 +389,40 @@ class ProxyService : Service() {
     private fun getCarrierName(): String {
         return try {
             val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-            tm.networkOperatorName.ifBlank { "unknown" }
+            // Try network operator first, then SIM operator as fallback
+            val network = tm.networkOperatorName?.takeIf { it.isNotBlank() }
+            val sim = tm.simOperatorName?.takeIf { it.isNotBlank() }
+            val carrier = network ?: sim
+
+            if (carrier != null) return carrier
+
+            // No SIM — check if on WiFi
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val activeNetwork = cm.activeNetwork
+            val caps = activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                // Try to get WiFi SSID
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                val ssid = wm.connectionInfo?.ssid?.removePrefix("\"")?.removeSuffix("\"")
+                    ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+                return "WiFi" + (ssid?.let { " ($it)" } ?: "")
+            }
+
+            "unknown"
+        } catch (e: Exception) { "unknown" }
+    }
+
+    private fun getConnectionType(): String {
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            when {
+                caps == null -> "none"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "other"
+            }
         } catch (e: Exception) { "unknown" }
     }
 

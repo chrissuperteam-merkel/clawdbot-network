@@ -17,6 +17,7 @@ class NodeManager {
         device: info.device || 'unknown',
         carrier: info.carrier || 'unknown',
         country: info.country || 'unknown',
+        connectionType: info.connectionType || 'unknown',
         ip: info.ip || null,
         wallet: info.wallet || null,
         registeredAt: Date.now(),

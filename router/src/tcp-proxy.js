@@ -48,6 +48,10 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
         const targetHost = connectMatch[1];
         const targetPort = parseInt(connectMatch[2]);
 
+        // Store buffered data in pending so websocket handler can flush it on connect_ready
+        const pending = { socket: clientSocket, nodeId: session.nodeId, bufferedData: [], ready: false };
+        pendingRequests.set(requestId, pending);
+
         node.ws.send(JSON.stringify({
           type: 'proxy_connect',
           requestId,
@@ -56,35 +60,23 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
           port: targetPort,
         }));
 
-        // Don't send 200 until phone confirms connection
-        // For now, small delay to let phone open socket
         console.log(`[PROXY] CONNECT tunnel ${requestId.slice(0,8)} → ${targetHost}:${targetPort}`);
 
-        // Buffer client data until we know phone socket is ready
-        const bufferedData = [];
-        let phoneReady = false;
-
-        // Set phone ready after a delay (phone needs time to open socket)
-        setTimeout(() => {
-          phoneReady = true;
-          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          // Flush buffered data
-          for (const d of bufferedData) {
-            node.ws.send(JSON.stringify({
-              type: 'proxy_data',
-              requestId,
-              sessionId: session.sessionId,
-              data: d.toString('base64'),
-            }));
+        // Timeout if phone doesn't confirm in 15s
+        const connectTimeout = setTimeout(() => {
+          if (!pending.ready) {
+            console.log(`[PROXY] CONNECT timeout ${requestId.slice(0,8)}`);
+            clientSocket.write('HTTP/1.1 504 Gateway Timeout\r\n\r\n');
+            clientSocket.end();
+            pendingRequests.delete(requestId);
           }
-          bufferedData.length = 0;
-        }, 1500); // 1.5s should be enough for socket open
+        }, 15000);
 
+        // When phone sends connect_ready, websocket-handler sends 200 and flushes buffer
         clientSocket.on('data', (d) => {
-          console.log(`[PROXY] CONNECT data out ${requestId.slice(0,8)}: ${d.length} bytes (ready=${phoneReady})`);
           sessionManager.recordActivity(session.sessionId, d.length);
-          if (!phoneReady) {
-            bufferedData.push(Buffer.from(d));
+          if (!pending.ready) {
+            pending.bufferedData.push(Buffer.from(d));
             return;
           }
           node.ws.send(JSON.stringify({
@@ -94,6 +86,8 @@ function createTcpProxy(nodeManager, sessionManager, pendingRequests) {
             data: d.toString('base64'),
           }));
         });
+
+        clientSocket.on('close', () => clearTimeout(connectTimeout));
       } else {
         // Plain HTTP proxy
         node.ws.send(JSON.stringify({

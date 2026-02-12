@@ -59,6 +59,7 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests) {
         device: msg.device,
         carrier: msg.carrier,
         country: msg.country,
+        connectionType: msg.connectionType || 'unknown',
         ip: msg.ip,
         wallet: msg.wallet,
       });
@@ -82,6 +83,32 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests) {
           pending.socket.end();
           pendingRequests.delete(msg.requestId);
         }
+      }
+      break;
+    }
+
+    case 'connect_ready': {
+      // Phone has opened the TCP socket to target — tell client the tunnel is ready
+      const pending = pendingRequests.get(msg.requestId);
+      if (pending?.socket && !pending.socket.destroyed) {
+        pending.socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        // Flush any buffered client data
+        if (pending.bufferedData?.length) {
+          const node = nodeManager.get(pending.nodeId);
+          if (node?.ws?.readyState === 1) {
+            for (const buf of pending.bufferedData) {
+              node.ws.send(JSON.stringify({
+                type: 'proxy_data',
+                requestId: msg.requestId,
+                sessionId: msg.sessionId,
+                data: buf.toString('base64'),
+              }));
+            }
+          }
+          pending.bufferedData = [];
+        }
+        pending.ready = true;
+        console.log(`[PROXY] CONNECT tunnel ${msg.requestId?.slice(0,8)} ready`);
       }
       break;
     }
