@@ -50,7 +50,7 @@ class ProxyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val serverUrl = intent?.getStringExtra("serverUrl") ?: "ws://46.225.67.114:3001/node"
+        val serverUrl = intent?.getStringExtra("serverUrl") ?: "wss://static.114.67.225.46.clients.your-server.de/clawdbot/node"
         wallet = intent?.getStringExtra("wallet")
 
         startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))

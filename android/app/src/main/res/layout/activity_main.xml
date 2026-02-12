@@ -98,7 +98,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="Router URL (ws://...)"
-        android:text="ws://46.225.67.114:3001/node"
+        android:text="wss://static.114.67.225.46.clients.your-server.de/clawdbot/node"
         android:textSize="14sp"
         android:textColor="#FFFFFF"
         android:textColorHint="#666666"

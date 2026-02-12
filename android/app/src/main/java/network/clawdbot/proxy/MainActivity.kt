@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startProxyService() {
-        val serverUrl = serverUrlInput.text.toString().ifBlank { "ws://46.225.67.114:3001/node" }
+        val serverUrl = serverUrlInput.text.toString().ifBlank { "wss://static.114.67.225.46.clients.your-server.de/clawdbot/node" }
         val intent = Intent(this, ProxyService::class.java).apply {
             putExtra("serverUrl", serverUrl)
             putExtra("wallet", WalletManager.getOrCreate(this@MainActivity).publicKey)

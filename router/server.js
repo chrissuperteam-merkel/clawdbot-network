@@ -8,7 +8,7 @@ const { Connection, PublicKey, Keypair, Transaction, SystemProgram, LAMPORTS_PER
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const PROXY_PORT = process.env.PROXY_PORT || 1080;
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.devnet.solana.com';
 
@@ -16,6 +16,7 @@ const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.devnet.solana.com';
 const phoneNodes = new Map();   // nodeId -> { ws, info, sessions }
 const proxySessions = new Map(); // sessionId -> { nodeId, agentWallet, startedAt, bytesIn, bytesOut }
 const pendingRequests = new Map(); // requestId -> { socket, nodeId }
+const pendingFetches = new Map();  // requestId -> { onData, onError }
 
 const connection = new Connection(SOLANA_RPC, 'confirmed');
 
@@ -93,7 +94,18 @@ function handleNodeMessage(nodeId, ws, msg) {
         pending2.socket.end();
         pendingRequests.delete(msg.requestId);
       }
+      // Also check pendingFetches
+      const fetch2 = pendingFetches.get(msg.requestId);
+      if (fetch2) fetch2.onError(msg.error);
       console.log(`[PROXY] Error from node ${nodeId}: ${msg.error}`);
+      break;
+    }
+    case 'proxy_fetch_response': {
+      const fetch = pendingFetches.get(msg.requestId);
+      if (fetch) {
+        const body = msg.data ? Buffer.from(msg.data, 'base64') : Buffer.alloc(0);
+        fetch.onData(body, msg.done !== false);
+      }
       break;
     }
   }
@@ -197,6 +209,88 @@ app.get('/proxy/session/:id', (req, res) => {
   res.json({ sessionId: req.params.id, ...session });
 });
 
+// Simple proxy fetch — devs just call GET /proxy/fetch?url=https://httpbin.org/ip
+// Routes HTTP request through phone's TCP proxy tunnel
+app.get('/proxy/fetch', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).json({ error: 'Missing ?url= parameter' });
+
+  // Find any available node
+  let bestNode = null, bestNodeId = null;
+  for (const [id, node] of phoneNodes) {
+    if (node.ws.readyState !== WebSocket.OPEN) continue;
+    if (!bestNode || node.sessions < bestNode.sessions) {
+      bestNode = node; bestNodeId = id;
+    }
+  }
+  if (!bestNode) return res.status(503).json({ error: 'No proxy nodes online' });
+
+  let parsed;
+  try { parsed = new URL(targetUrl); } catch { return res.status(400).json({ error: 'Invalid URL' }); }
+
+  const requestId = uuidv4();
+  const sessionId = uuidv4();
+  proxySessions.set(sessionId, {
+    nodeId: bestNodeId, agentWallet: null, startedAt: Date.now(),
+    bytesIn: 0, bytesOut: 0, status: 'active'
+  });
+  bestNode.sessions++;
+
+  // Build raw HTTP request
+  const path = parsed.pathname + parsed.search;
+  const rawReq = `GET ${targetUrl} HTTP/1.1\r\nHost: ${parsed.host}\r\nConnection: close\r\nAccept: */*\r\nUser-Agent: ClawdBot-Proxy/1.0\r\n\r\n`;
+
+  // Send as proxy_http to phone (this the APK already understands)
+  bestNode.ws.send(JSON.stringify({
+    type: 'proxy_http',
+    requestId,
+    sessionId,
+    rawRequest: Buffer.from(rawReq).toString('base64')
+  }));
+
+  // Collect response from pendingRequests using a virtual socket
+  const chunks = [];
+  const timeout = setTimeout(() => {
+    pendingRequests.delete(requestId);
+    bestNode.sessions = Math.max(0, bestNode.sessions - 1);
+    proxySessions.delete(sessionId);
+    if (!res.headersSent) res.status(504).json({ error: 'Proxy timeout (15s)' });
+  }, 15000);
+
+  // Create a virtual writable that collects data
+  const { PassThrough } = require('stream');
+  const virtualSocket = new PassThrough();
+  virtualSocket.destroyed = false;
+  pendingRequests.set(requestId, { socket: virtualSocket, nodeId: bestNodeId });
+
+  virtualSocket.on('data', (chunk) => chunks.push(chunk));
+  virtualSocket.on('end', () => {
+    clearTimeout(timeout);
+    pendingRequests.delete(requestId);
+    bestNode.sessions = Math.max(0, bestNode.sessions - 1);
+    const session = proxySessions.get(sessionId);
+    if (session) { session.status = 'completed'; session.endedAt = Date.now(); }
+
+    const fullResponse = Buffer.concat(chunks).toString();
+    // Split HTTP headers from body
+    const splitIdx = fullResponse.indexOf('\r\n\r\n');
+    const headers = splitIdx >= 0 ? fullResponse.slice(0, splitIdx) : '';
+    const body = splitIdx >= 0 ? fullResponse.slice(splitIdx + 4) : fullResponse;
+
+    res.json({
+      url: targetUrl,
+      nodeId: bestNodeId,
+      device: bestNode.info.device,
+      country: bestNode.info.country,
+      sessionId,
+      responseHeaders: headers,
+      response: body
+    });
+  });
+
+  console.log(`[FETCH] ${targetUrl} via ${bestNodeId} (${bestNode.info.device})`);
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -222,12 +316,25 @@ const proxyServer = net.createServer((clientSocket) => {
     // Find session from header
     const sessionMatch = headerStr.match(/X-Session-Id:\s*([^\r\n]+)/i);
     const sessionId = sessionMatch ? sessionMatch[1].trim() : null;
-    const session = sessionId ? proxySessions.get(sessionId) : null;
+    let session = sessionId ? proxySessions.get(sessionId) : null;
 
+    // Auto-create session if no header provided
     if (!session) {
-      clientSocket.write('HTTP/1.1 407 Proxy Authentication Required\r\nContent-Type: text/plain\r\n\r\nMissing X-Session-Id header. Create a session via POST /proxy/request first.\r\n');
-      clientSocket.end();
-      return;
+      let autoNode = null, autoNodeId = null;
+      for (const [id, node] of phoneNodes) {
+        if (node.ws.readyState !== WebSocket.OPEN) continue;
+        if (!autoNode || node.sessions < autoNode.sessions) { autoNode = node; autoNodeId = id; }
+      }
+      if (!autoNode) {
+        clientSocket.write('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nNo proxy nodes online.\r\n');
+        clientSocket.end();
+        return;
+      }
+      const autoSessionId = uuidv4();
+      proxySessions.set(autoSessionId, { nodeId: autoNodeId, agentWallet: null, startedAt: Date.now(), bytesIn: 0, bytesOut: 0, status: 'active' });
+      autoNode.sessions++;
+      session = proxySessions.get(autoSessionId);
+      console.log(`[SESSION] Auto-created ${autoSessionId} on node ${autoNodeId}`);
     }
 
     const node = phoneNodes.get(session.nodeId);
@@ -288,13 +395,13 @@ const proxyServer = net.createServer((clientSocket) => {
 });
 
 // --- Start ---
-server.listen(PORT, () => {
-  console.log(`[ROUTER] API + WebSocket server on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[ROUTER] API + WebSocket server on port ${PORT} (all interfaces)`);
   console.log(`[ROUTER] Phone nodes connect to ws://HOST:${PORT}/node`);
 });
 
-proxyServer.listen(PROXY_PORT, () => {
-  console.log(`[ROUTER] HTTP proxy on port ${PROXY_PORT}`);
+proxyServer.listen(PROXY_PORT, '0.0.0.0', () => {
+  console.log(`[ROUTER] HTTP proxy on port ${PROXY_PORT} (all interfaces)`);
   console.log(`[ROUTER] Agents use: http://HOST:${PROXY_PORT} with X-Session-Id header`);
 });
 
