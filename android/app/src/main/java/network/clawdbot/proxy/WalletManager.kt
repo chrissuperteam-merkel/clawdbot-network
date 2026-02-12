@@ -1,76 +1,53 @@
 package network.clawdbot.proxy
 
 import android.content.Context
-import java.security.SecureRandom
+import android.util.Log
+import org.sol4k.Keypair
+import org.sol4k.PublicKey
 
 data class PhoneWallet(
     val publicKey: String,
-    val secretKey: ByteArray
+    val keypair: Keypair
 )
 
 object WalletManager {
     private const val PREFS = "clawdbot_wallet"
     private const val KEY_PUBLIC = "public_key"
     private const val KEY_SECRET = "secret_key"
-
-    // Base58 alphabet (Bitcoin/Solana standard)
-    private const val ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    private const val TAG = "WalletManager"
 
     fun getOrCreate(context: Context): PhoneWallet {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val existing = prefs.getString(KEY_PUBLIC, null)
+        val existingPublic = prefs.getString(KEY_PUBLIC, null)
+        val existingSecret = prefs.getString(KEY_SECRET, null)
 
-        // Check if existing key is already base58 (not hex)
-        if (existing != null && existing.length in 32..44 && !existing.matches(Regex("^[0-9a-f]+$"))) {
-            val secretHex = prefs.getString(KEY_SECRET, "") ?: ""
-            return PhoneWallet(existing, hexToBytes(secretHex))
+        // Try to restore existing keypair
+        if (existingPublic != null && existingSecret != null) {
+            try {
+                val secretBytes = hexToBytes(existingSecret)
+                val keypair = Keypair.fromSecretKey(secretBytes)
+                // Verify it matches stored public key
+                if (keypair.publicKey.toBase58() == existingPublic) {
+                    Log.i(TAG, "Restored wallet: $existingPublic")
+                    return PhoneWallet(existingPublic, keypair)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to restore wallet, generating new one: ${e.message}")
+            }
         }
 
-        // Generate new Ed25519-compatible keypair
-        // Solana uses 32-byte seeds; the public key is derived from the seed
-        // For simplicity, we generate a 32-byte random key and base58-encode it
-        // In production, use sol4k or TweetNaCl for proper Ed25519
-        val seed = ByteArray(32)
-        SecureRandom().nextBytes(seed)
-        val publicKeyBase58 = base58Encode(seed)
-        val secretKeyHex = bytesToHex(seed)
+        // Generate new Ed25519 keypair (real Solana wallet)
+        val keypair = Keypair.generate()
+        val publicKeyBase58 = keypair.publicKey.toBase58()
+        val secretKeyHex = bytesToHex(keypair.secret)
 
         prefs.edit()
             .putString(KEY_PUBLIC, publicKeyBase58)
             .putString(KEY_SECRET, secretKeyHex)
             .apply()
 
-        return PhoneWallet(publicKeyBase58, seed)
-    }
-
-    /**
-     * Base58 encode bytes (Solana-compatible)
-     */
-    fun base58Encode(input: ByteArray): String {
-        if (input.isEmpty()) return ""
-
-        // Count leading zeros
-        var zeros = 0
-        for (b in input) {
-            if (b.toInt() == 0) zeros++ else break
-        }
-
-        // Convert to big integer and encode
-        val encoded = StringBuilder()
-        var num = java.math.BigInteger(1, input)
-        val base = java.math.BigInteger.valueOf(58)
-        val zero = java.math.BigInteger.ZERO
-
-        while (num > zero) {
-            val (quotient, remainder) = num.divideAndRemainder(base)
-            encoded.append(ALPHABET[remainder.toInt()])
-            num = quotient
-        }
-
-        // Add leading '1's for zero bytes
-        repeat(zeros) { encoded.append('1') }
-
-        return encoded.reverse().toString()
+        Log.i(TAG, "Generated new wallet: $publicKeyBase58")
+        return PhoneWallet(publicKeyBase58, keypair)
     }
 
     private fun bytesToHex(bytes: ByteArray): String =

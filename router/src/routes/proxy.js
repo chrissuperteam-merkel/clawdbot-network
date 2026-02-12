@@ -136,7 +136,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
     // Build raw HTTP request
     const rawReq = `GET ${targetUrl} HTTP/1.1\r\nHost: ${parsed.host}\r\nConnection: close\r\nAccept: */*\r\nUser-Agent: ClawdBot-Proxy/1.0\r\n\r\n`;
-    sessionManager.recordActivity(session.sessionId, rawReq.length);
+    sessionManager.recordActivity(session.sessionId, 0, rawReq.length);
 
     // Send to phone via existing proxy_http message type
     match.node.ws.send(JSON.stringify({
@@ -160,7 +160,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
     virtualSocket.on('data', (chunk) => {
       chunks.push(chunk);
-      sessionManager.recordActivity(session.sessionId, 0, chunk.length);
+      sessionManager.recordActivity(session.sessionId, chunk.length, 0);
     });
     virtualSocket.on('end', () => {
       clearTimeout(timeout);
