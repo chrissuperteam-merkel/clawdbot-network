@@ -11,7 +11,7 @@ module.exports = {
   NODE_SHARE: 0.70,
   PLATFORM_SHARE: 0.30,
 
-  // Session pricing (in SOL)
+  // Session pricing (in SOL) — legacy/fallback
   SESSION_COST_SOL: 0.005,         // Cost per proxy session
   MIN_ESCROW_SOL: 0.005,           // Minimum escrow deposit
 
@@ -21,6 +21,13 @@ module.exports = {
     residential: 0.005,  // Stealth 50-79 (residential wifi)
     basic: 0.002,        // Stealth 0-49 (unknown)
   },
+
+  // x402 USDC pricing (alternative to SOL escrow)
+  USDC_MINT: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  // Solana mainnet USDC
+  USDC_SESSION_PRICE: '0.01',       // $0.01 per session
+  USDC_PER_GB: '2.00',              // $2.00 per GB
+  X402_FACILITATOR_URL: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+  X402_ENABLED: process.env.X402_ENABLED === 'true' || false,
 
   // Timeouts
   SESSION_TIMEOUT_MS: 5 * 60 * 1000,    // 5 min idle timeout

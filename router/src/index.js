@@ -22,6 +22,9 @@ const createProxyRoutes = require('./routes/proxy');
 const createAdminRoutes = require('./routes/admin');
 const createDashboardRoutes = require('./routes/dashboard');
 
+const MonitoringService = require('./services/monitoring');
+const { x402PaymentMiddleware, getBazaarDescriptor } = require('./middleware/x402-payment');
+
 // Infra
 const setupWebSocket = require('./websocket-handler');
 const createTcpProxy = require('./tcp-proxy');
@@ -33,6 +36,7 @@ const nodeManager = new NodeManager(db);
 const sessionManager = new SessionManager(nodeManager, db);
 const solanaService = new SolanaService(db);
 const apiKeyManager = new ApiKeyManager();
+const monitoringService = new MonitoringService(nodeManager);
 
 // Shared state for pending proxy requests
 const pendingRequests = new Map();
@@ -62,8 +66,15 @@ app.use(optionalApiKey(apiKeyManager));
 
 // --- Mount Routes ---
 app.use('/nodes', createNodeRoutes(nodeManager));
+// x402 payment middleware on proxy routes (alternative to SOL escrow)
+app.use('/proxy/session', x402PaymentMiddleware());
 app.use('/proxy', createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests));
-app.use('/admin', createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db));
+app.use('/admin', createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db, monitoringService));
+
+// x402 Bazaar discovery endpoint
+app.get('/x402/bazaar', (req, res) => {
+  res.json(getBazaarDescriptor());
+});
 app.use('/dashboard', createDashboardRoutes(nodeManager, sessionManager, solanaService));
 
 // Root
@@ -83,6 +94,8 @@ app.get('/', (req, res) => {
       'GET /admin/stats': 'Historical stats (from SQLite)',
       'GET /admin/payouts': 'Recent payouts',
       'POST /admin/keys': 'Create API key (admin)',
+      'GET /admin/monitoring': 'Node monitoring stats (admin)',
+      'GET /x402/bazaar': 'x402 Bazaar service descriptor',
       'GET /dashboard': 'Live monitoring dashboard',
     },
     docs: 'https://github.com/chrissuperteam-merkel/clawdbot-network',
@@ -93,13 +106,13 @@ app.get('/', (req, res) => {
 const server = http.createServer(app);
 setupWebSocket(server, nodeManager, pendingRequests, sessionManager);
 
-server.listen(config.PORT, '0.0.0.0', () => {
+server.listen(config.PORT, '127.0.0.1', () => {
   log.info({ port: config.PORT, network: config.SOLANA_NETWORK }, 'Clawdbot Network Router v1.0.0 started');
 });
 
 // --- TCP Proxy ---
 const tcpProxy = createTcpProxy(nodeManager, sessionManager, pendingRequests, apiKeyManager);
-tcpProxy.listen(config.PROXY_PORT, '0.0.0.0', () => {
+tcpProxy.listen(config.PROXY_PORT, '127.0.0.1', () => {
   log.info({ port: config.PROXY_PORT }, 'TCP proxy started');
 });
 

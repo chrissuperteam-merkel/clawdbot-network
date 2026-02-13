@@ -262,6 +262,52 @@ echo "🚦 Rate Limiting"
 HEADERS=$(curl -sI "$BASE/admin/health" --max-time 5 2>&1)
 echo "$HEADERS" | grep -qi "x-ratelimit" && pass "Rate limit headers present" || fail "Rate limit headers" "missing"
 
+# --- Payment E2E ---
+echo "💸 Payment E2E"
+SOLANA="/root/.local/share/solana/install/active_release/bin/solana"
+AGENT_WALLET="/tmp/agent-wallet.json"
+PLATFORM_WALLET="2hRGZqn5hZgr2U6A9ihYxTGoZNnt7XhzNkJCE5eiF5UB"
+SESSION_COST="0.005"
+
+if [ -f "$AGENT_WALLET" ]; then
+  AGENT_BAL=$($SOLANA balance "$AGENT_WALLET" --url devnet 2>/dev/null | awk '{print $1}')
+  if [ "$(echo "$AGENT_BAL > 0.006" | bc -l 2>/dev/null)" = "1" ]; then
+    # Create escrow TX
+    ESCROW_OUTPUT=$($SOLANA transfer "$PLATFORM_WALLET" "$SESSION_COST" --url devnet --keypair "$AGENT_WALLET" 2>&1)
+    ESCROW_TX=$(echo "$ESCROW_OUTPUT" | grep -oP '[1-9A-HJ-NP-Za-km-z]{60,90}' | head -1)
+    if [ -n "$ESCROW_TX" ]; then
+      pass "Escrow TX created ($ESCROW_TX)"
+      sleep 3
+
+      # Create paid session
+      PAY_RESP=$(curl -s -X POST "$BASE/proxy/session" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"wallet\":\"Cntvwza3nASfbpqK1WgUUxLwc6qLhKPpevfbB5qbmwug\", \"escrowTx\":\"$ESCROW_TX\"}" --max-time 15)
+      PAY_VERIFIED=$(echo "$PAY_RESP" | jq -r '.payment.verified')
+      PAY_SID=$(echo "$PAY_RESP" | jq -r '.sessionId')
+      PAY_PAID=$(echo "$PAY_RESP" | jq -r '.payment.verified')
+      [ "$PAY_VERIFIED" = "true" ] && pass "Paid session verified" || fail "Paid session" "verified=$PAY_VERIFIED"
+
+      if [ "$PAY_SID" != "null" ] && [ -n "$PAY_SID" ]; then
+        # End paid session — should trigger payout
+        PAY_END=$(curl -s -X POST "$BASE/proxy/session/$PAY_SID/end" --max-time 20)
+        PAY_END_PAID=$(echo "$PAY_END" | jq '.paid')
+        PAYOUT_OK=$(echo "$PAY_END" | jq -r '.payout.success')
+        PAYOUT_SIG=$(echo "$PAY_END" | jq -r '.payout.signature // empty')
+        [ "$PAY_END_PAID" = "true" ] && pass "Session marked paid=true" || fail "Paid flag" "$PAY_END_PAID"
+        [ "$PAYOUT_OK" = "true" ] && pass "Payout succeeded (TX: ${PAYOUT_SIG:0:20}...)" || fail "Payout" "success=$PAYOUT_OK"
+      fi
+    else
+      fail "Escrow TX" "failed: $ESCROW_OUTPUT"
+    fi
+  else
+    echo "  ⏭️  Skipped (agent wallet balance too low: $AGENT_BAL SOL)"
+  fi
+else
+  echo "  ⏭️  Skipped (no agent wallet at $AGENT_WALLET)"
+fi
+
 # --- Balance ---
 echo "💰 Solana"
 BALANCE=$(curl -s "$BASE/admin/balance" -H "X-Admin-Secret: $ADMIN_SECRET" --max-time 10 | jq '.balance')
