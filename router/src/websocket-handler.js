@@ -7,7 +7,7 @@ const { child } = require('./services/logger');
 
 const log = child('websocket');
 
-function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
+function setupWebSocket(server, nodeManager, pendingRequests, sessionManager, monitoringService, trafficLog) {
   const wss = new WebSocketServer({ server, path: '/node' });
 
   wss.on('connection', (ws, req) => {
@@ -19,12 +19,13 @@ function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
     ws.on('pong', () => {
       ws.isAlive = true;
       nodeManager.heartbeat(nodeId);
+      if (monitoringService) monitoringService.recordHeartbeat(nodeId);
     });
 
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionManager);
+        handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionManager, monitoringService, trafficLog);
       } catch {
         handleBinaryData(nodeId, data, pendingRequests, sessionManager);
       }
@@ -52,7 +53,7 @@ function setupWebSocket(server, nodeManager, pendingRequests, sessionManager) {
   return wss;
 }
 
-function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionManager) {
+function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionManager, monitoringService, trafficLog) {
   switch (msg.type) {
     case 'register': {
       nodeManager.register(nodeId, ws, {
@@ -64,11 +65,13 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
         wallet: msg.wallet,
       });
       ws.send(JSON.stringify({ type: 'registered', nodeId }));
+      if (monitoringService) monitoringService.recordHeartbeat(nodeId);
       break;
     }
 
     case 'heartbeat': {
       nodeManager.heartbeat(nodeId);
+      if (monitoringService) monitoringService.recordHeartbeat(nodeId);
       ws.send(JSON.stringify({ type: 'heartbeat_ack', timestamp: Date.now() }));
       break;
     }
@@ -77,6 +80,23 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
       const pending = pendingRequests.get(msg.requestId);
       const body = msg.data ? Buffer.from(msg.data, 'base64') : Buffer.alloc(0);
       log.debug({ requestId: msg.requestId?.slice(0, 8), bytes: body.length, done: msg.done }, 'Proxy response');
+
+      if (monitoringService) monitoringService.recordHeartbeat(nodeId);
+
+      // Log traffic on completion
+      if (msg.done && trafficLog) {
+        trafficLog.unshift({
+          timestamp: new Date().toISOString(),
+          method: 'PROXY',
+          host: pending?.host || 'unknown',
+          bytes: body.length,
+          nodeId,
+          sessionId: msg.sessionId || null,
+          status: 'completed',
+        });
+        if (trafficLog.length > 100) trafficLog.length = 100;
+        if (monitoringService) monitoringService.recordRequest(nodeId, true, body.length);
+      }
 
       // Fix 4: Data FROM phone = bytesIn for the agent (response data)
       if (msg.sessionId && sessionManager && body.length > 0) {
@@ -134,6 +154,19 @@ function handleMessage(nodeId, ws, msg, nodeManager, pendingRequests, sessionMan
       if (pending?.socket && !pending.socket.destroyed) {
         pending.socket.end();
         pendingRequests.delete(msg.requestId);
+      }
+      if (monitoringService) monitoringService.recordRequest(nodeId, false);
+      if (trafficLog) {
+        trafficLog.unshift({
+          timestamp: new Date().toISOString(),
+          method: 'PROXY',
+          host: pending?.host || 'unknown',
+          bytes: 0,
+          nodeId,
+          sessionId: msg.sessionId || null,
+          status: 'error: ' + (msg.error || 'unknown'),
+        });
+        if (trafficLog.length > 100) trafficLog.length = 100;
       }
       log.warn({ nodeId, error: msg.error }, 'Proxy error from node');
       break;

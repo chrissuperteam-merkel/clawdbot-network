@@ -3,7 +3,7 @@
  */
 const { Router } = require('express');
 
-function createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db, monitoringService) {
+function createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db, monitoringService, trafficLog) {
   const router = Router();
   const adminSecret = process.env.ADMIN_SECRET || 'clawdbot-dev';
 
@@ -82,6 +82,19 @@ function createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyMan
 
   router.get('/sessions', (req, res) => {
     res.json({ sessions: sessionManager.listActive() });
+  });
+
+  // Bandwidth stats
+  router.get('/bandwidth', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    if (!monitoringService) return res.status(501).json({ error: 'Monitoring not available' });
+    res.json(monitoringService.getBandwidthStats());
+  });
+
+  // Traffic log
+  router.get('/traffic', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    res.json({ traffic: trafficLog || [] });
   });
 
   // Node monitoring stats (Phase 3)

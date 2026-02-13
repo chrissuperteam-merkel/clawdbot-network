@@ -9,7 +9,7 @@ const { child } = require('../services/logger');
 
 const log = child('proxy');
 
-function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests) {
+function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests, monitoringService, trafficLog) {
   const router = Router();
 
   // Create a proxy session
@@ -230,7 +230,7 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
 
     const virtualSocket = new PassThrough();
     virtualSocket.destroyed = false;
-    pendingRequests.set(requestId, { socket: virtualSocket, nodeId: match.nodeId });
+    pendingRequests.set(requestId, { socket: virtualSocket, nodeId: match.nodeId, host: parsed.host, sessionId: session.sessionId });
 
     virtualSocket.on('data', (chunk) => {
       chunks.push(chunk);
@@ -258,6 +258,24 @@ function createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRe
         response: body,
       });
     });
+
+    // Record monitoring + traffic
+    if (monitoringService) {
+      monitoringService.recordHeartbeat(match.nodeId);
+      monitoringService.recordRequest(match.nodeId, true);
+    }
+    if (trafficLog) {
+      trafficLog.unshift({
+        timestamp: new Date().toISOString(),
+        method: 'GET',
+        host: parsed.host,
+        bytes: 0,
+        nodeId: match.nodeId,
+        sessionId: session.sessionId,
+        status: 'pending',
+      });
+      if (trafficLog.length > 100) trafficLog.length = 100;
+    }
 
     log.info({ url: targetUrl, nodeId: match.nodeId, device: match.node.info.device }, 'Fetch request');
   });

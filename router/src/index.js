@@ -41,6 +41,9 @@ const monitoringService = new MonitoringService(nodeManager);
 // Shared state for pending proxy requests
 const pendingRequests = new Map();
 
+// Shared in-memory traffic log (last 100 entries)
+const trafficLog = [];
+
 // --- Express App ---
 const app = express();
 app.use(express.json());
@@ -59,7 +62,13 @@ app.use((req, res, next) => {
 });
 
 // Rate limiting on all routes
-app.use(rateLimit());
+// Rate limit only proxy routes, not dashboard/admin
+app.use((req, res, next) => {
+  if (req.path.startsWith('/dashboard') || req.path.startsWith('/admin') || req.path === '/nodes' || req.path === '/') {
+    return next();
+  }
+  return rateLimit()(req, res, next);
+});
 
 // Optional auth on all routes
 app.use(optionalApiKey(apiKeyManager));
@@ -68,14 +77,14 @@ app.use(optionalApiKey(apiKeyManager));
 app.use('/nodes', createNodeRoutes(nodeManager));
 // x402 payment middleware on proxy routes (alternative to SOL escrow)
 app.use('/proxy/session', x402PaymentMiddleware());
-app.use('/proxy', createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests));
-app.use('/admin', createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db, monitoringService));
+app.use('/proxy', createProxyRoutes(nodeManager, sessionManager, solanaService, pendingRequests, monitoringService, trafficLog));
+app.use('/admin', createAdminRoutes(nodeManager, sessionManager, solanaService, apiKeyManager, db, monitoringService, trafficLog));
 
 // x402 Bazaar discovery endpoint
 app.get('/x402/bazaar', (req, res) => {
   res.json(getBazaarDescriptor());
 });
-app.use('/dashboard', createDashboardRoutes(nodeManager, sessionManager, solanaService));
+app.use('/dashboard', createDashboardRoutes(nodeManager, sessionManager, solanaService, monitoringService, trafficLog));
 
 // Root
 app.get('/', (req, res) => {
@@ -104,7 +113,7 @@ app.get('/', (req, res) => {
 
 // --- HTTP + WebSocket Server ---
 const server = http.createServer(app);
-setupWebSocket(server, nodeManager, pendingRequests, sessionManager);
+setupWebSocket(server, nodeManager, pendingRequests, sessionManager, monitoringService, trafficLog);
 
 server.listen(config.PORT, '127.0.0.1', () => {
   log.info({ port: config.PORT, network: config.SOLANA_NETWORK }, 'Clawdbot Network Router v1.0.0 started');
